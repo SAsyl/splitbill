@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Делим счёт</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 512 512%22 width=%22512%22 height=%22512%22%3E %3Ctitle%3ESplitBill%3C/title%3E %3Cdefs%3E %3ClinearGradient id=%22bg%22 x1=%220%22 y1=%220%22 x2=%220%22 y2=%221%22%3E %3Cstop offset=%220%22 stop-color=%22#3BB4F2%22/%3E %3Cstop offset=%221%22 stop-color=%22#1A7FD4%22/%3E %3C/linearGradient%3E %3Cfilter id=%22shadow%22 x=%22-20%25%22 y=%22-20%25%22 width=%22140%25%22 height=%22140%25%22%3E %3CfeDropShadow dx=%220%22 dy=%2210%22 stdDeviation=%2212%22 flood-color=%22#0B3D6B%22 flood-opacity=%22.35%22/%3E %3C/filter%3E %3CclipPath id=%22l%22%3E%3Cpolygon points=%220,0 256,0 256,100 262,100 250,112 262,124 250,136 262,148 250,160 262,172 250,184 262,196 250,208 262,220 250,232 262,244 250,256 262,268 250,280 262,292 250,304 262,316 250,328 262,340 250,352 262,364 250,376 262,388 256,399 256,512 0,512%22/%3E%3C/clipPath%3E %3CclipPath id=%22r%22%3E%3Cpolygon points=%22512,0 256,0 256,100 262,100 250,112 262,124 250,136 262,148 250,160 262,172 250,184 262,196 250,208 262,220 250,232 262,244 250,256 262,268 250,280 262,292 250,304 262,316 250,328 262,340 250,352 262,364 250,376 262,388 256,399 256,512 512,512%22/%3E%3C/clipPath%3E %3Cg id=%22receipt%22%3E %3Cpath d=%22M156 134 Q156 118 172 118 L340 118 Q356 118 356 134 L356 360 L346 378 L336 360 L326 378 L316 360 L306 378 L296 360 L286 378 L276 360 L266 378 L256 360 L246 378 L236 360 L226 378 L216 360 L206 378 L196 360 L186 378 L176 360 L166 378 L156 360 Z%22 fill=%22#fff%22/%3E %3Crect x=%22206%22 y=%22146%22 width=%22100%22 height=%2214%22 rx=%227%22 fill=%22#1A7FD4%22/%3E %3Crect x=%22180%22 y=%22188%22 width=%2296%22 height=%2211%22 rx=%225.5%22 fill=%22#CBD6E2%22/%3E %3Crect x=%22296%22 y=%22188%22 width=%2236%22 height=%2211%22 rx=%225.5%22 fill=%22#CBD6E2%22/%3E %3Crect x=%22180%22 y=%22218%22 width=%2276%22 height=%2211%22 rx=%225.5%22 fill=%22#CBD6E2%22/%3E %3Crect x=%22296%22 y=%22218%22 width=%2236%22 height=%2211%22 rx=%225.5%22 fill=%22#CBD6E2%22/%3E %3Crect x=%22180%22 y=%22248%22 width=%22104%22 height=%2211%22 rx=%225.5%22 fill=%22#CBD6E2%22/%3E %3Crect x=%22296%22 y=%22248%22 width=%2236%22 height=%2211%22 rx=%225.5%22 fill=%22#CBD6E2%22/%3E %3Cpath d=%22M180 284 H332%22 stroke=%22#CBD6E2%22 stroke-width=%224%22 stroke-dasharray=%228 7%22 stroke-linecap=%22round%22/%3E %3Crect x=%22180%22 y=%22306%22 width=%2256%22 height=%2216%22 rx=%228%22 fill=%22#1A7FD4%22/%3E %3Crect x=%22276%22 y=%22306%22 width=%2256%22 height=%2216%22 rx=%228%22 fill=%22#1A7FD4%22/%3E %3C/g%3E %3C/defs%3E %3Crect width=%22512%22 height=%22512%22 fill=%22url(#bg)%22/%3E %3Cg filter=%22url(#shadow)%22%3E %3Cuse href=%22#receipt%22 clip-path=%22url(#l)%22 transform=%22translate(-12 -2) rotate(-6 256 380)%22/%3E %3Cuse href=%22#receipt%22 clip-path=%22url(#r)%22 transform=%22translate(12 6) rotate(6 256 380)%22/%3E %3C/g%3E %3C/svg%3E">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark; /* native dropdowns follow the theme */
+    --bg: var(--tg-theme-bg-color, #fff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f6);
+    --fg: var(--tg-theme-text-color, #111);
+    --hint: var(--tg-theme-hint-color, #888);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-fg: var(--tg-theme-button-text-color, #fff);
+    --danger: #e5484d;
+    --ok: #30a46c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.tg) { --bg: #1c1c1e; --bg2: #000; --fg: #f2f2f2; --hint: #8e8e93; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.4 system-ui, -apple-system, sans-serif; background: var(--bg2); color: var(--fg); }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 16px 96px; }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; color: var(--hint); font-weight: 600; margin: 20px 4px 6px; display: flex; justify-content: space-between; align-items: center; }
+  .card { background: var(--bg); border-radius: 12px; overflow: hidden; }
+  .row { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--bg2); }
+  .row:last-child { border-bottom: 0; }
+  .grow { flex: 1; min-width: 0; }
+  .muted { color: var(--hint); font-size: 13px; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .item { cursor: pointer; user-select: none; }
+  .item.mine { box-shadow: inset 4px 0 var(--accent); }
+  .item.free .num { color: var(--danger); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .chip { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--bg2); }
+  .chip.me { background: var(--accent); color: var(--accent-fg); }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 6px 10px; background: var(--bg2); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-fg); }
+  button.link { background: none; color: var(--accent); padding: 0; font-size: 13px; text-transform: none; }
+  input, select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--bg2); background: var(--bg); color: var(--fg); min-width: 0; }
+  option { background: var(--bg); color: var(--fg); }
+  input.price { width: 100px; text-align: right; }
+  .stepper { display: flex; align-items: center; gap: 6px; }
+  .stepper button { width: 32px; padding: 4px 0; }
+  .warn { background: color-mix(in srgb, var(--danger) 15%, var(--bg)); color: var(--fg); padding: 10px 12px; border-radius: 12px; margin-top: 12px; font-size: 14px; }
+  .paid { text-decoration: line-through; color: var(--hint); }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--bg); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); display: flex; gap: 8px; box-shadow: 0 -1px 0 var(--bg2); }
+  .bar > * { flex: 1; }
+  .center { text-align: center; padding: 48px 16px; }
+  button:disabled { opacity: .5; }
+  input.place { width: 100%; border: 0; background: none; padding: 0 4px 8px; color: var(--hint); }
+  .bill-link { cursor: pointer; }
+  .photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .photo { background: var(--bg); border-radius: 12px; overflow: hidden; }
+  .photo img { width: 100%; height: 160px; object-fit: cover; display: block; cursor: zoom-in; }
+  .photo .row { padding: 6px; }
+  #zoom { position: fixed; inset: 0; background: rgba(0, 0, 0, .9); display: flex; align-items: center; justify-content: center; z-index: 10; }
+  #zoom[hidden] { display: none; }
+  #zoom img { max-width: 100%; max-height: 100%; }
+  #toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; display: none; z-index: 9; }
+</style>
+</head>
+<body>
+<main id="app"><div class="center muted">Загрузка…</div></main>
+<div id="toast"></div>
+<div id="zoom" hidden data-act="unzoom"><img alt="Фото чека"></div>
+<input id="file" type="file" accept="image/*" multiple hidden>
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg?.initData) { document.documentElement.classList.add('tg'); tg.ready(); tg.expand(); }
+// Telegram's own theme wins over the OS one: dropdown popups must match it
+const syncScheme = () => { if (tg?.colorScheme) document.documentElement.style.colorScheme = tg.colorScheme; };
+syncScheme(); tg?.onEvent?.('themeChanged', syncScheme);
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const money = (minor) => (minor / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+const phoneFmt = (d) => d.length === 11 ? `${d[0] === '7' ? '+7' : d[0]} ${d.slice(1, 4)} ${d.slice(4, 7)} ${d.slice(7, 9)} ${d.slice(9)}` : d;
+const BANKS = ['Kaspi', 'Freedom', 'Halyk', 'Jusan', 'Forte', 'BCC', 'Home Credit'];
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+
+// Identity: Telegram user when inside the Mini App, otherwise a random id kept in this browser
+const tgUser = tg?.initDataUnsafe?.user;
+const myPid = tgUser ? `tg${tgUser.id}` : (store.get('pid') || (() => { const p = 'w' + crypto.randomUUID().slice(0, 12); store.set('pid', p); return p; })());
+const tgName = tgUser ? [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') : '';
+
+let billId = tg?.initDataUnsafe?.start_param || location.pathname.match(/^\/b\/([\w-]+)/)?.[1];
+let bill = null, actAs = myPid, editing = false, busy = false;
+let draft = null; // requisites form being edited: { pid, phone, banks }
+let timer = null; // polling of the open bill
+const when = (ts) => new Date(ts * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+function toast(text, ms = 2500) {
+  const t = $('#toast'); t.textContent = text; t.style.display = 'block';
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', ms);
+}
+
+async function api(path, opts = {}) {
+  // Signed Telegram data lets the server verify who we are (needed to edit own requisites)
+  const headers = { ...opts.headers, ...(tg?.initData ? { 'X-Init-Data': tg.initData } : {}) };
+  const res = await fetch(path, { ...opts, headers });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function op(body) {
+  try { bill = await api(`/api/bills/${billId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); render(); return true; }
+  catch (e) { toast(e.message); return false; }
+}
+
+async function refresh() {
+  if (!billId || busy || document.activeElement?.tagName === 'INPUT') return;
+  try {
+    const fresh = await api(`/api/bills/${billId}`);
+    if (!bill || fresh.version !== bill.version) { bill = fresh; render(); }
+  } catch (e) { if (!bill) $('#app').innerHTML = `<div class="center">${esc(e.message)}</div>`; }
+}
+
+// Downscale on the device: phone photos are 5–10 MB, the API limit is 5 MB
+function shrink(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 2000 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(resolve, 'image/jpeg', 0.85);
+    };
+    img.onerror = () => reject(new Error('Не удалось открыть картинку'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// Slow request: block polling and buttons until it finishes
+async function task(progress, request, done) {
+  busy = true; toast(progress, 60000); render();
+  try { bill = await request(); toast(done); }
+  catch (e) { toast(e.message); }
+  finally { busy = false; render(); }
+}
+
+// A long bill shot in parts: upload one by one, then "Распознать" reads them as one bill
+function uploadPhotos(files) {
+  const room = bill.max_photos - bill.photos.length;
+  if (room <= 0) return toast(`Уже ${bill.max_photos} фото — больше добавить нельзя`);
+  const batch = files.slice(0, room);
+  const skipped = files.length - batch.length;
+  const done = (batch.length > 1 ? `Добавлено фото: ${batch.length}` : 'Фото добавлено')
+    + (skipped ? ` (лимит ${bill.max_photos}, ещё ${skipped} не влезло)` : '');
+  return task('Загружаю фото…', async () => {
+    let latest = bill;
+    for (const [i, file] of batch.entries()) {
+      if (batch.length > 1) toast(`Загружаю фото ${i + 1} из ${batch.length}…`, 60000);
+      latest = await api(`/api/bills/${billId}/photos`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: await shrink(file) });
+    }
+    return latest;
+  }, done);
+}
+
+const recognize = () => task('Распознаю чек… 10–20 секунд', () =>
+  api(`/api/bills/${billId}/ocr`, { method: 'POST' }), 'Готово — проверьте позиции');
+
+function nameOf(pid) { return bill.people[pid]?.name || '?'; }
+
+function joinView() {
+  return `<h1>${esc(bill.title)}</h1>
+    <div class="card"><div class="row"><input id="name" class="grow" placeholder="Ваше имя" maxlength="40" value="${esc(store.get('name') || '')}">
+    <button class="primary" data-act="join">Войти</button></div></div>
+    <p class="muted">Имя увидят остальные участники счёта.</p>`;
+}
+
+function itemRow(item) {
+  const count = item.shares[actAs] || 0;
+  const free = !Object.keys(item.shares).length;
+  if (editing) {
+    return `<div class="row"><input class="grow" data-name="${item.id}" value="${esc(item.name)}">
+      <input class="price" inputmode="decimal" data-price="${item.id}" value="${item.price / 100}">
+      <button data-act="del" data-id="${item.id}">✕</button></div>`;
+  }
+  const chips = Object.entries(item.shares).map(([pid, c]) =>
+    `<span class="chip ${pid === actAs ? 'me' : ''}">${esc(nameOf(pid))}${c > 1 ? ' ×' + c : ''}</span>`).join('');
+  const stepper = count ? `<div class="stepper"><button data-act="dec" data-id="${item.id}">−</button><b>${count}</b><button data-act="inc" data-id="${item.id}">+</button></div>` : '';
+  return `<div class="row item ${count ? 'mine' : ''} ${free ? 'free' : ''}" data-act="toggle" data-id="${item.id}">
+    <div class="grow"><div>${esc(item.name)}</div><div class="chips">${chips || '<span class="muted">никто не отметил</span>'}</div></div>
+    ${stepper}<span class="num">${money(item.price)}</span>
+    <button class="link" data-act="all" data-id="${item.id}">всем</button></div>`;
+}
+
+function photosView() {
+  if (!bill.photos.length) return '';
+  const pending = bill.photos.filter((p) => !p.ocr).length;
+  // All new photos go in one request: a long bill shot in parts is read as one
+  const ocrButton = bill.ocr && pending
+    ? `<button class="primary" data-act="ocr" style="width:100%;margin-bottom:8px" ${busy ? 'disabled' : ''}>🔍 Распознать${pending > 1 ? ` (${pending} фото — как один чек)` : ''}</button>` : '';
+  return `<h2>Фото чека</h2>${ocrButton}<div class="photos">${bill.photos.map((p) => `<div class="photo">
+    <img src="/api/bills/${billId}/photos/${p.id}" loading="lazy" data-act="zoom" alt="Фото чека">
+    <div class="row"><span class="muted grow">${p.ocr ? '✓ распознано' : ''}</span>
+    <button data-act="del-photo" data-id="${p.id}" ${busy ? 'disabled' : ''}>✕</button></div></div>`).join('')}</div>`;
+}
+
+// Telegram participants edit their own requisites; guests can be filled in by anyone
+const canEditRequisites = () => !bill.pay_to.admin && (!bill.payer.startsWith('tg') || bill.payer === myPid);
+
+function requisitesForm() {
+  const all = [...new Set([...BANKS, ...draft.banks])];
+  const chips = all.map((b) => {
+    const i = draft.banks.indexOf(b);
+    return `<button class="chip ${i >= 0 ? 'me' : ''}" data-act="bank" data-bank="${esc(b)}">${i >= 0 ? `${i + 1}. ` : ''}${esc(b)}</button>`;
+  }).join('');
+  return `<div class="row"><input id="req-phone" class="grow" type="tel" inputmode="tel" placeholder="Номер для перевода: 8 7xx xxx xx xx" value="${esc(draft.phone)}"></div>
+    <div class="row"><div class="chips">${chips}</div></div>
+    <div class="row"><input id="req-bank" class="grow" placeholder="Другой банк" maxlength="30"><button data-act="bank-add">+</button></div>
+    <div class="row"><span class="muted grow">Банки — в порядке приоритета нажатия</span><button class="primary" data-act="req-save">Сохранить</button></div>`;
+}
+
+function payToView() {
+  const t = bill.pay_to;
+  if (draft) return requisitesForm();
+  if (t.phone) {
+    return `<div class="row"><div class="grow">Перевод: <b>${esc(t.name)}</b>
+      <div class="num">${phoneFmt(t.phone)}</div><div class="muted">${t.banks.map(esc).join(' → ')}</div></div>
+      <button data-act="copy-phone">Копировать</button>
+      ${canEditRequisites() ? '<button class="link" data-act="edit-req">изменить</button>' : ''}</div>`;
+  }
+  if (t.admin) return '';
+  return `<div class="row muted">Ждём, пока ${esc(t.name)} укажет номер для перевода</div>`;
+}
+
+function summaryText() {
+  const lines = [`🧾 ${bill.title} — ${money(bill.calc.total)}`];
+  for (const [pid, amount] of Object.entries(bill.calc.owed)) {
+    const mark = pid === payee() ? ' (получатель)' : bill.people[pid].paid ? ' ✅' : '';
+    lines.push(`${nameOf(pid)}: ${money(amount)}${mark}`);
+  }
+  const t = bill.pay_to;
+  if (t.phone) lines.push(`\nПеревод: ${t.name}, ${phoneFmt(t.phone)} (${t.banks.join(' → ')})`);
+  return lines.join('\n');
+}
+
+const payee = () => bill.payer || (bill.people[bill.admin_pid] ? bill.admin_pid : null);
+
+function render() {
+  const joined = Boolean(bill.people[myPid]);
+  // Browser users must give a name; Telegram users (e.g. the admin) may just look
+  if (!joined && !tgUser) { $('#app').innerHTML = joinView(); return; }
+  if (!bill.people[actAs]) actAs = joined ? myPid : Object.keys(bill.people)[0];
+  if (draft && draft.pid !== bill.payer) draft = null;
+  if (!draft && !bill.pay_to.admin && !bill.pay_to.phone && canEditRequisites()) draft = { pid: bill.payer, phone: '', banks: [] };
+  const c = bill.calc;
+  const people = Object.keys(bill.people);
+  const options = (sel, empty) => (empty ? `<option value="">${empty}</option>` : '') +
+    people.map((p) => `<option value="${p}" ${p === sel ? 'selected' : ''}>${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</option>`).join('');
+  const mismatch = bill.receipt_total && Math.abs(bill.receipt_total - c.items_sum * (1 + bill.service_pct / 100)) > 100;
+
+  $('#app').innerHTML = `
+    <h1>${esc(bill.title)}</h1>
+    ${joined ? '' : '<div class="warn">Вы смотрите счёт, но не участвуете в нём. <button class="link" data-act="join-tg">Участвовать</button></div>'}
+    <input id="place" class="place" placeholder="📍 Заведение" maxlength="60" value="${esc(bill.place || '')}">
+    ${photosView()}
+    <h2>Отмечаю за</h2>
+    <div class="card"><div class="row"><span class="grow">Чьи позиции</span><select data-act="actas">${options(actAs)}</select></div></div>
+    <h2>Позиции <span><button class="link" data-act="edit">${editing ? 'Готово' : 'Изменить'}</button></span></h2>
+    <div class="card">
+      ${bill.items.map(itemRow).join('') || `<div class="row muted">Пока пусто — добавьте позицию${bill.ocr && bill.photos.length ? ' или распознайте фото' : ''}</div>`}
+      <div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
+      <button class="primary" data-act="add">+</button></div>
+    </div>
+    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем».</div>` : ''}
+    ${mismatch ? `<div class="warn">Итог в чеке ${money(bill.receipt_total)}, а по позициям ${money(c.items_sum)} + обслуживание. Проверьте распознанные цены.</div>` : ''}
+    <h2>Итого</h2>
+    <div class="card">
+      <div class="row"><span class="grow">Обслуживание, %</span><input id="service" class="price" inputmode="decimal" value="${bill.service_pct}"></div>
+      <div class="row"><span class="grow">Кому переводить</span><select data-act="payer">
+        <option value="">${esc(bill.admin_name)} (по умолчанию)</option>
+        ${people.filter((p) => p !== bill.admin_pid).map((p) => `<option value="${p}" ${p === bill.payer ? 'selected' : ''}>${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</option>`).join('')}
+      </select></div>
+      ${payToView()}
+      ${people.map((p) => `<div class="row">
+        <span class="grow ${bill.people[p].paid ? 'paid' : ''}">${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</span>
+        <b class="num">${money(c.owed[p])}</b>
+        ${p === payee() ? '<span class="muted">получатель</span>' : `<input type="checkbox" title="Перевёл" data-act="paid" data-pid="${p}" ${bill.people[p].paid ? 'checked' : ''}>`}
+      </div>`).join('')}
+      <div class="row"><b class="grow">Всего</b><b class="num">${money(c.total)}</b></div>
+    </div>
+    <h2>Участники <button class="link" data-act="add-person">+ без Telegram</button></h2>
+    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${p === myPid ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
+    <div class="bar"><button data-act="photo" ${busy ? 'disabled' : ''}>📎 Фото</button><button data-act="share">🔗 Ссылка</button><button class="primary" data-act="copy">📋 Итоги</button></div>`;
+}
+
+async function copy(text, done) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    // Older WebViews: fall back to a temporary textarea
+    const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta);
+    ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  toast(done);
+}
+
+// One delegated handler for all buttons
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el || el.tagName === 'SELECT' || el.type === 'checkbox') return;
+  e.stopPropagation();
+  const id = el.dataset.id, item = bill?.items.find((i) => i.id === id), count = item?.shares[actAs] || 0;
+  ({
+    join: () => { const name = $('#name').value.trim(); if (!name) return toast('Введите имя'); store.set('name', name); op({ op: 'join', pid: myPid, name }); },
+    toggle: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count ? 0 : 1 }),
+    inc: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count + 1 }),
+    dec: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count - 1 }),
+    all: () => op({ op: 'share_all', item_id: id }),
+    del: () => op({ op: 'delete_item', item_id: id }),
+    edit: () => { editing = !editing; render(); },
+    add: () => op({ op: 'add_item', name: $('#new-name').value, price: $('#new-price').value }),
+    rm: () => op({ op: 'remove_person', pid: el.dataset.pid }),
+    'add-person': () => {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = '<input id="guest" class="grow" placeholder="Имя" maxlength="40"><button class="primary" data-act="guest">Добавить</button>';
+      el.closest('h2').nextElementSibling.append(row); $('#guest').focus();
+    },
+    guest: () => { const name = $('#guest').value.trim(); if (name) op({ op: 'join', pid: 'g' + crypto.randomUUID().slice(0, 12), name }); },
+    open: () => openBill(el.dataset.id, true),
+    'join-tg': () => op({ op: 'join', pid: myPid, name: tgName }),
+    photo: () => $('#file').click(),
+    ocr: () => recognize(),
+    'del-photo': () => op({ op: 'delete_photo', photo_id: id }),
+    zoom: () => { $('#zoom img').src = el.src; $('#zoom').hidden = false; },
+    unzoom: () => { $('#zoom').hidden = true; },
+    'copy-phone': () => copy(bill.pay_to.phone, 'Номер скопирован'),
+    'edit-req': () => { draft = { pid: bill.payer, phone: bill.pay_to.phone, banks: [...bill.pay_to.banks] }; render(); },
+    bank: () => {
+      const b = el.dataset.bank;
+      draft.banks = draft.banks.includes(b) ? draft.banks.filter((x) => x !== b) : [...draft.banks, b];
+      render();
+    },
+    'bank-add': () => {
+      const b = $('#req-bank').value.trim();
+      if (b && !draft.banks.includes(b)) draft.banks.push(b);
+      render();
+    },
+    'req-save': async () => {
+      if (await op({ op: 'set_requisites', pid: draft.pid, phone: draft.phone, banks: draft.banks })) { draft = null; render(); }
+    },
+    share: () => {
+      const url = new URL(bill.share_url, location.origin).href;
+      // Inside Telegram: native "send to chat" picker; elsewhere: clipboard
+      if (tg?.initData) tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent('Отметьте, что ели: ' + bill.title)}`);
+      else copy(url, 'Ссылка скопирована — отправьте в чат');
+    },
+    copy: () => copy(summaryText(), 'Итоги скопированы'),
+  })[el.dataset.act]?.();
+});
+
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.dataset.act === 'actas') { actAs = t.value; render(); }
+  else if (t.dataset.act === 'payer') op({ op: 'set_payer', pid: t.value });
+  else if (t.dataset.act === 'paid') op({ op: 'set_paid', pid: t.dataset.pid, paid: t.checked });
+  else if (t.id === 'place') op({ op: 'set_place', place: t.value });
+  else if (t.id === 'service') op({ op: 'set_service', service_pct: Number(t.value.replace(',', '.')) || 0 });
+  else if (t.dataset.name || t.dataset.price) {
+    const id = t.dataset.name || t.dataset.price;
+    op({ op: 'update_item', item_id: id, name: $(`[data-name="${id}"]`).value, price: $(`[data-price="${id}"]`).value });
+  }
+  else if (t.id === 'file' && t.files.length) { uploadPhotos([...t.files]); t.value = ''; }
+});
+
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'req-phone') draft.phone = e.target.value;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'new-price') $('[data-act="add"]').click();
+});
+
+// Navigation without reloads: keeps Telegram init data inside the Mini App
+async function openBill(id, fromList = false) {
+  billId = id; bill = null; draft = null; editing = false;
+  history.replaceState(null, '', `/b/${id}`);
+  await refresh();
+  // Opened by invite link: join automatically; the admin browsing all bills only looks
+  const adminBrowsing = fromList && myPid === bill?.admin_pid;
+  if (bill && tgUser && !bill.people[myPid] && !adminBrowsing) op({ op: 'join', pid: myPid, name: tgName });
+  clearInterval(timer); timer = setInterval(refresh, 3000);
+  if (tg?.initData) tg.BackButton.show();
+}
+
+function billsList(data) {
+  if (!data.bills.length) return '';
+  return `<h2>Мои счета <span class="muted">хранятся ${data.ttl_days} дней</span></h2><div class="card">${data.bills.map((b) => `
+    <div class="row bill-link" data-act="open" data-id="${b.id}"><div class="grow"><b>${esc(b.title)}</b>
+      <div class="muted">${[when(b.created_at), b.place && '📍 ' + esc(b.place), `👥 ${b.people}`].filter(Boolean).join(' · ')}</div></div>
+      <span class="muted">›</span></div>`).join('')}</div>`;
+}
+
+async function home() {
+  billId = null; bill = null; clearInterval(timer);
+  history.replaceState(null, '', '/');
+  if (tg?.initData) tg.BackButton.hide();
+  // The list needs a verified Telegram user; in a plain browser only "create" is shown
+  const data = tg?.initData ? await api('/api/bills').catch(() => ({ bills: [] })) : { bills: [] };
+  $('#app').innerHTML = `<h1>Делим счёт</h1>
+    <div class="card"><div class="row"><input id="title" class="grow" placeholder="Название, например «Пятница»">
+    <button class="primary" id="create">Создать</button></div></div>
+    <p class="muted">Создайте счёт и отправьте ссылку друзьям — каждый отметит, что ел.</p>
+    ${billsList(data)}`;
+  $('#create').onclick = async () => {
+    try {
+      const created = await api('/api/bills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('#title').value }) });
+      openBill(created.id);
+    } catch (e) { toast(e.message); }
+  };
+}
+
+tg?.BackButton?.onClick(home);
+billId ? openBill(billId) : home();
+</script>
+</body>
+</html>

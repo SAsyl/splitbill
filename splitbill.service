@@ -1,0 +1,16 @@
+# User service: systemctl --user. Starts at boot without login thanks to `loginctl enable-linger`.
+[Unit]
+Description=SplitBill: Telegram bot + Mini App
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/asylkhan/D/Projects/splitbill
+EnvironmentFile=/home/asylkhan/D/Projects/splitbill/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/asylkhan/D/Projects/splitbill/.venv/bin/python app.py
+# No network yet at boot / Telegram unreachable -> exit and retry
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
