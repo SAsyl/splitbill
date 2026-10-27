@@ -432,11 +432,12 @@ def apply_op(bill_id: str, body: dict[str, Any]) -> Bill:
 
 # ---------- photos & OCR ----------
 
-def add_photo(bill_id: str, data: bytes, mime: str) -> Bill:
-    if mime not in ocr.IMAGE_TYPES:
-        raise BadRequest("Поддерживаются только JPEG, PNG и WebP")
-    if not 0 < len(data) <= ocr.MAX_IMAGE_BYTES:
-        raise BadRequest("Фото должно быть не больше 5 МБ")
+def add_photo(bill_id: str, data: bytes) -> Bill:
+    mime = ocr.sniff(data)  # real type from the bytes; the client's Content-Type is ignored
+    if mime is None:
+        raise BadRequest("Поддерживаются только фото (JPEG, PNG, WebP) и PDF")
+    if len(data) > ocr.MAX_IMAGE_BYTES:
+        raise BadRequest("Файл должен быть не больше 5 МБ")
     with _lock:
         bill = load(bill_id)
         if len(bill["photos"]) >= MAX_PHOTOS:
@@ -444,7 +445,7 @@ def add_photo(bill_id: str, data: bytes, mime: str) -> Bill:
         photo_id = secrets.token_hex(8)
         with _db() as conn:
             conn.execute("INSERT INTO photos VALUES (?, ?, ?, ?)", (photo_id, bill_id, mime, data))
-        bill["photos"].append({"id": photo_id, "ocr": False})
+        bill["photos"].append({"id": photo_id, "ocr": False, "mime": mime})
         bill["version"] += 1
         save(bill)
     return bill
@@ -494,6 +495,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache)
+        if not content_type.startswith(("text/html", "application/json")):  # user files: never run as a page
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+        if content_type == ocr.PDF:  # download, not render on our origin
+            self.send_header("Content-Disposition", 'attachment; filename="receipt.pdf"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -558,8 +564,7 @@ class Handler(BaseHTTPRequestHandler):
             case ["api", "bills", bill_id]:
                 return view(apply_op(bill_id, self._json_body()))
             case ["api", "bills", bill_id, "photos"]:
-                mime = self.headers.get("Content-Type", "").split(";")[0]
-                return view(add_photo(bill_id, self._body(), mime))
+                return view(add_photo(bill_id, self._body()))
             case ["api", "bills", bill_id, "ocr"]:
                 return view(recognize_pending(bill_id))
         raise KeyError(self.path)
@@ -604,19 +609,34 @@ _album_bills: dict[str, str] = {}
 MAX_TRACKED_ALBUMS = 200
 
 
+def is_bill_document(msg: dict[str, Any]) -> bool:
+    mime = msg.get("document", {}).get("mime_type", "")
+    return mime.startswith("image/") or mime == ocr.PDF  # other files are not ours: ignore silently
+
+
 def on_photo(chat_id: int, msg: dict[str, Any]) -> None:
-    photo = max(msg["photo"], key=lambda p: p["width"] * p["height"])
-    data = tg_file(photo["file_id"])
+    # A photo, or an image/PDF sent as a file; the type is checked by add_photo
+    if "photo" in msg:
+        file = max(msg["photo"], key=lambda p: p["width"] * p["height"])
+    elif msg["document"].get("file_size", 0) > ocr.MAX_IMAGE_BYTES:
+        tg("sendMessage", chat_id=chat_id, text="Файл больше 5 МБ — пришлите фото или PDF поменьше.")
+        return
+    else:
+        file = msg["document"]
+    data = tg_file(file["file_id"])
+    if ocr.sniff(data) is None:
+        tg("sendMessage", chat_id=chat_id, text="Принимаю только фото чека (JPEG, PNG, WebP) или PDF.")
+        return
     album = msg.get("media_group_id")
     if album in _album_bills:  # next part of a long bill: same bill, no new reply
-        add_photo(_album_bills[album], data, "image/jpeg")
+        add_photo(_album_bills[album], data)
         return
     bill = create_bill(msg.get("caption") or "Счёт", f"tg{msg['from']['id']}")
     if album:
         _album_bills[album] = bill["id"]
         while len(_album_bills) > MAX_TRACKED_ALBUMS:
             _album_bills.pop(next(iter(_album_bills)))
-    add_photo(bill["id"], data, "image/jpeg")
+    add_photo(bill["id"], data)
     hint = ("Нажмите «Распознать» в счёте — все фото прочитаются как один чек."
             if settings()["ocr"] else "Внесите позиции вручную.")
     reply_with_bill(chat_id, bill, f"Счёт создан, фото чека прикреплено. {hint} 👇")
@@ -700,7 +720,7 @@ def on_message(msg: dict[str, Any]) -> None:
     chat_id = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
     is_admin = bool(ADMIN_ID) and msg.get("from", {}).get("id") == ADMIN_ID and msg["chat"]["type"] == "private"
-    if msg.get("photo"):
+    if msg.get("photo") or is_bill_document(msg):
         on_photo(chat_id, msg)
     elif is_admin and re.match(r"^/(admin|requisites)\b", text):
         on_admin_command(msg, text)

@@ -57,6 +57,7 @@
   .photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
   .photo { background: var(--bg); border-radius: 12px; overflow: hidden; }
   .photo img { width: 100%; height: 160px; object-fit: cover; display: block; cursor: zoom-in; }
+  .photo .pdf { width: 100%; height: 160px; font-size: 20px; }
   .photo .row { padding: 6px; }
   #zoom { position: fixed; inset: 0; background: rgba(0, 0, 0, .9); display: flex; align-items: center; justify-content: center; z-index: 10; }
   #zoom[hidden] { display: none; }
@@ -68,7 +69,7 @@
 <main id="app"><div class="center muted">Загрузка…</div></main>
 <div id="toast"></div>
 <div id="zoom" hidden data-act="unzoom"><img alt="Фото чека"></div>
-<input id="file" type="file" accept="image/*" multiple hidden>
+<input id="file" type="file" accept="image/*,application/pdf" multiple hidden>
 <script>
 const tg = window.Telegram?.WebApp;
 if (tg?.initData) { document.documentElement.classList.add('tg'); tg.ready(); tg.expand(); }
@@ -160,7 +161,8 @@ function uploadPhotos(files) {
     let latest = bill;
     for (const [i, file] of batch.entries()) {
       if (batch.length > 1) toast(`Загружаю фото ${i + 1} из ${batch.length}…`, 60000);
-      latest = await api(`/api/bills/${billId}/photos`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: await shrink(file) });
+      const body = file.type === 'application/pdf' ? file : await shrink(file);  // the server checks the real type
+      latest = await api(`/api/bills/${billId}/photos`, { method: 'POST', body });
     }
     return latest;
   }, done);
@@ -202,7 +204,9 @@ function photosView() {
   const ocrButton = bill.ocr && pending
     ? `<button class="primary" data-act="ocr" style="width:100%;margin-bottom:8px" ${busy ? 'disabled' : ''}>🔍 Распознать${pending > 1 ? ` (${pending} фото — как один чек)` : ''}</button>` : '';
   return `<h2>Фото чека</h2>${ocrButton}<div class="photos">${bill.photos.map((p) => `<div class="photo">
-    <img src="/api/bills/${billId}/photos/${p.id}" loading="lazy" data-act="zoom" alt="Фото чека">
+    ${p.mime === 'application/pdf'
+      ? `<button class="pdf" data-act="pdf" data-id="${p.id}">📄 PDF</button>`
+      : `<img src="/api/bills/${billId}/photos/${p.id}" loading="lazy" data-act="zoom" alt="Фото чека">`}
     <div class="row"><span class="muted grow">${p.ocr ? '✓ распознано' : ''}</span>
     <button data-act="del-photo" data-id="${p.id}" ${busy ? 'disabled' : ''}>✕</button></div></div>`).join('')}</div>`;
 }
@@ -335,6 +339,7 @@ document.addEventListener('click', (e) => {
     'del-photo': () => op({ op: 'delete_photo', photo_id: id }),
     zoom: () => { $('#zoom img').src = el.src; $('#zoom').hidden = false; },
     unzoom: () => { $('#zoom').hidden = true; },
+    pdf: () => { const url = `${location.origin}/api/bills/${billId}/photos/${el.dataset.id}`; tg?.initData ? tg.openLink(url) : window.open(url); },
     'copy-phone': () => copy(bill.pay_to.phone, 'Номер скопирован'),
     'edit-req': () => { draft = { pid: bill.payer, phone: bill.pay_to.phone, banks: [...bill.pay_to.banks] }; render(); },
     bank: () => {

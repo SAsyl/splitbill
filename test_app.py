@@ -46,7 +46,7 @@ def call(path: str, body: Any = None, *, raw: bytes | None = None, mime: str = "
     try:
         with urllib.request.urlopen(req) as resp:
             payload = resp.read()
-            return resp.status, payload if resp.headers["Content-Type"].startswith("image/") else json.loads(payload)
+            return resp.status, json.loads(payload) if resp.headers["Content-Type"] == "application/json" else payload
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
 
@@ -54,8 +54,9 @@ def call(path: str, body: Any = None, *, raw: bytes | None = None, mime: str = "
 def check_claude_code_backend() -> None:
     """The claude-code backend talks to a fake `claude` that answers like `claude -p --output-format stream-json`."""
     tmp = tempfile.mkdtemp()
-    answer = {"items": [{"name": "Плов", "note": "", "qty": 1, "price": 3190}],
-              "place": "Нават", "service_pct": 10, "service_amount": 0, "total": 3509}
+    answer = {"is_receipt": True, "place": "Нават\u202e", "service_pct": 10, "service_amount": 0, "total": 3509,
+              "items": [{"name": "Плов", "note": "", "qty": 1, "price": 3190},
+                        {"name": "Взлом", "note": "", "qty": 1, "price": 10**9}]}  # out of bounds: dropped
     fake = os.path.join(tmp, "claude")
     with open(fake, "w") as f:
         f.write("#!/bin/sh\ncat > /dev/null\n"
@@ -64,13 +65,27 @@ def check_claude_code_backend() -> None:
     os.chmod(fake, 0o755)
     saved = (ocr.BACKEND, ocr.CLAUDE_BIN)
     ocr.BACKEND, ocr.CLAUDE_BIN = "claude-code", fake
+    jpeg = (b"\xff\xd8\xff img", "image/jpeg")
     try:
-        r = ocr.recognize([(b"img", "image/jpeg")])
+        r = ocr.recognize([jpeg])
         assert r["items"] == [{"name": "Плов", "price": 319000}] and r["place"] == "Нават" and r["total"] == 350900
+        try:  # a script labelled as an image never reaches the model
+            ocr.recognize([(b"#!/bin/sh", "image/jpeg")])
+            raise AssertionError("fake image accepted")
+        except ocr.OcrError:
+            pass
+        not_receipt = {**answer, "is_receipt": False}
+        with open(fake, "w") as f:
+            f.write(f"#!/bin/sh\necho '{json.dumps({'type': 'result', 'structured_output': not_receipt})}'\n")
+        try:
+            ocr.recognize([jpeg])
+            raise AssertionError("not a receipt accepted")
+        except ocr.OcrError as e:
+            assert "не похоже на чек" in str(e)
         with open(fake, "w") as f:  # not logged in: Claude Code reports an error result
             f.write("#!/bin/sh\necho '{\"type\":\"result\",\"is_error\":true,\"result\":\"Please run /login\"}'\n")
         try:
-            ocr.recognize([(b"img", "image/jpeg")])
+            ocr.recognize([jpeg])
             raise AssertionError("error result accepted")
         except ocr.OcrError as e:
             assert "/login" in str(e)
@@ -115,22 +130,32 @@ def main() -> None:
     assert call(path, {**req_body, "pid": "w1"})[0] == 200
 
     # Photos: attach, fetch, OCR gated by the admin switch
-    png = b"\x89PNG fake"
+    png = b"\x89PNG\r\n\x1a\n fake"
     status, b = call(path + "/photos", raw=png, mime="image/png")
     photo_id = b["photos"][0]["id"]
     assert call(f"{path}/photos/{photo_id}") == (200, png)
     assert call(path + "/photos", raw=b"x", mime="image/gif")[0] == 400
+    assert call(path + "/photos", raw=b"<script>alert(1)</script>", mime="image/png")[0] == 400  # by bytes, not header
     assert call(f"{path}/ocr", raw=b"")[1]["error"] == "Распознавание выключено администратором"
-    call(path + "/photos", raw=b"\xff\xd8 part 2", mime="image/jpeg")
+    call(path + "/photos", raw=b"\xff\xd8\xff part 2", mime="application/octet-stream")
 
     app.set_setting("ocr", True)
     seen: list[list[tuple[bytes, str]]] = []
     ocr.recognize = lambda images: seen.append(images) or {"items": [{"name": "Плов", "price": 500000}], "service_pct": 10.0, "total": 550000, "place": "Нават"}
     status, b = call(f"{path}/ocr", raw=b"")
     assert status == 200 and b["items"][0]["name"] == "Плов" and b["service_pct"] == 10.0
-    assert seen == [[(png, "image/png"), (b"\xff\xd8 part 2", "image/jpeg")]]  # both parts in one request
+    assert seen == [[(png, "image/png"), (b"\xff\xd8\xff part 2", "image/jpeg")]]  # both parts in one request
     assert all(p["ocr"] for p in b["photos"]) and b["place"] == "Нават"
     assert call(f"{path}/ocr", raw=b"")[0] == 400  # nothing new to recognize
+
+    # PDF: accepted, served as a download that never renders on our origin
+    _, b = call(path + "/photos", raw=b"%PDF-1.4 fake", mime="image/jpeg")
+    pdf_id = b["photos"][-1]["id"]
+    assert b["photos"][-1]["mime"] == "application/pdf"
+    with urllib.request.urlopen(f"{BASE}{path}/photos/{pdf_id}") as resp:
+        assert resp.headers["Content-Disposition"].startswith("attachment")
+        assert resp.headers["X-Content-Type-Options"] == "nosniff" and "sandbox" in resp.headers["Content-Security-Policy"]
+    call(path, {"op": "delete_photo", "photo_id": pdf_id})
 
     _, b = call(path, {"op": "delete_photo", "photo_id": photo_id})
     assert [p["id"] for p in b["photos"]] != [photo_id] and len(b["photos"]) == 1
@@ -160,7 +185,7 @@ def main() -> None:
     # Bot: an album of 3 photos is one bill with 3 photos and a single reply
     sent: list[str] = []
     app.tg = lambda method, **p: sent.append(method) or {}
-    app.tg_file = lambda file_id: b"\xff\xd8 " + file_id.encode()
+    app.tg_file = lambda file_id: b"\xff\xd8\xff " + file_id.encode()
     def album_msg(n: int) -> dict[str, Any]:
         return {"chat": {"id": 5, "type": "private"}, "from": {"id": 555}, "media_group_id": "A1",
                 "photo": [{"file_id": f"p{n}", "width": 800, "height": 1200}]}
@@ -169,6 +194,14 @@ def main() -> None:
     bills = app.list_bills("tg555")
     assert len(bills) == 1 and sent == ["sendMessage"], (bills, sent)
     assert len(app.load(bills[0]["id"])["photos"]) == 3
+
+    # Bot: a script sent as an "image" file is refused, other files are ignored
+    sent.clear()
+    app.tg_file = lambda file_id: b"#!/bin/sh rm -rf"
+    doc = {"chat": {"id": 5, "type": "private"}, "from": {"id": 556}, "document": {"file_id": "d1", "mime_type": "image/png"}}
+    app.on_message(doc)
+    app.on_message({**doc, "document": {"file_id": "d2", "mime_type": "application/x-sh"}})
+    assert sent == ["sendMessage"] and app.list_bills("tg556") == []
 
     server.shutdown()
     print("test_app.py: ok")
