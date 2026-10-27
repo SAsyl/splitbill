@@ -203,6 +203,21 @@ def main() -> None:
     app.on_message({**doc, "document": {"file_id": "d2", "mime_type": "application/x-sh"}})
     assert sent == ["sendMessage"] and app.list_bills("tg556") == []
 
+    # Funnel watchdog: heals and alerts once per outage, reports recovery
+    app.FUNNEL_SETTLE = 0
+    sent_texts: list[str] = []
+    app.notify_admin = sent_texts.append
+    app.funnel.repair = lambda port: None
+    def step(alerted: bool, *checks: str | None) -> bool:  # checks: before heal, after heal
+        it = iter(checks)
+        app.funnel.check = lambda url: next(it)
+        return app.funnel_watchdog_step(alerted)
+    assert step(False, None) is False and sent_texts == []  # healthy: silent
+    assert step(False, "eof", "eof") is True and sent_texts[-1].startswith("⚠️")  # heal failed: one alert
+    assert step(True, "eof", "eof") is True and len(sent_texts) == 1  # still down: quiet retry
+    assert step(True, None) is False and sent_texts[-1] == "✅ Mini App снова доступен"
+    assert step(False, "eof", None) is False and "✅ Перезапустил" in sent_texts[-1] and len(sent_texts) == 3
+
     server.shutdown()
     print("test_app.py: ok")
 

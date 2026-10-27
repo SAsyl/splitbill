@@ -35,6 +35,7 @@ from itertools import takewhile
 from pathlib import Path
 from typing import Any, Callable
 
+import funnel
 import ocr
 from split import Bill, compute
 
@@ -200,6 +201,10 @@ def run_purger() -> None:
         except sqlite3.Error as e:
             print(f"purge failed: {e}")
         time.sleep(PURGE_INTERVAL)
+
+
+def is_funnel() -> bool:
+    return (urllib.parse.urlsplit(PUBLIC_URL).hostname or "").endswith(".ts.net")
 
 
 def share_url(bill_id: str) -> str:
@@ -674,7 +679,10 @@ def admin_panel() -> tuple[str, dict[str, Any]]:
         f"/bills — все счета (хранятся {BILL_TTL_DAYS} дней после последнего изменения)"
     )
     button = {"text": "Выключить OCR" if s["ocr"] else "Включить OCR", "callback_data": "ocr_toggle"}
-    return text, {"inline_keyboard": [[button]]}
+    rows = [[button]]
+    if is_funnel():
+        rows.append([{"text": "🔧 Проверить и починить Mini App", "callback_data": "funnel_fix"}])
+    return text, {"inline_keyboard": rows}
 
 
 def parse_requisites(text: str) -> tuple[str, list[str]]:
@@ -701,8 +709,13 @@ def on_admin_command(msg: dict[str, Any], text: str) -> None:
 
 
 def on_callback(query: dict[str, Any]) -> None:
-    if query["from"]["id"] != ADMIN_ID or query.get("data") != "ocr_toggle":
+    if query["from"]["id"] != ADMIN_ID or query.get("data") not in {"ocr_toggle", "funnel_fix"}:
         tg("answerCallbackQuery", callback_query_id=query["id"], text="Недоступно")
+        return
+    if query["data"] == "funnel_fix":
+        tg("answerCallbackQuery", callback_query_id=query["id"], text="Проверяю, до 40 секунд…")
+        # slow (network + settle time): off the polling thread so the bot keeps answering
+        threading.Thread(target=check_funnel_now, args=(query["message"]["chat"]["id"],), daemon=True).start()
         return
     enable = not settings()["ocr"]
     reason = ocr.unavailable_reason()
@@ -751,6 +764,60 @@ def handle_safely(update: dict[str, Any]) -> None:
             on_callback(update["callback_query"])
     except Exception as e:  # one bad update must not kill the polling thread
         print(f"bot: failed to handle update: {type(e).__name__}: {e}")
+
+
+# ---------- Funnel watchdog: the bot polls Telegram, but the Mini App needs inbound HTTPS ----------
+
+FUNNEL_CHECK_INTERVAL = 5 * 60
+FUNNEL_SETTLE = 20  # seconds for the ingress to pick the node up again
+
+
+def notify_admin(text: str) -> None:
+    if ADMIN_ID:
+        tg("sendMessage", chat_id=ADMIN_ID, text=text)
+
+
+def heal_funnel() -> str:
+    """Re-apply Funnel, re-check from outside and describe the result for the admin."""
+    try:
+        funnel.repair(PORT)
+    except funnel.FunnelError as e:
+        return f"❌ Не удалось перезапустить Funnel: {e}"
+    time.sleep(FUNNEL_SETTLE)
+    reason = funnel.check(PUBLIC_URL)
+    return "✅ Перезапустил Funnel, Mini App снова доступен" if reason is None else \
+        f"❌ Перезапустил Funnel, но Mini App всё ещё недоступен: {reason}"
+
+
+def funnel_watchdog_step(alerted: bool) -> bool:
+    """One check-and-heal round; returns whether the admin now knows the Mini App is down."""
+    reason = funnel.check(PUBLIC_URL)
+    if reason is None:
+        if alerted:
+            notify_admin("✅ Mini App снова доступен")
+        return False
+    result = heal_funnel()
+    print(f"funnel down ({reason}): {result}")
+    healed = result.startswith("✅")
+    if healed or not alerted:  # one alert per outage, retries stay quiet
+        notify_admin(f"⚠️ Mini App был недоступен извне ({reason}).\n{result}")
+    return not healed
+
+
+def run_funnel_watchdog() -> None:
+    alerted = False
+    while True:
+        time.sleep(FUNNEL_CHECK_INTERVAL)
+        try:
+            alerted = funnel_watchdog_step(alerted)
+        except Exception as e:  # e.g. Telegram unreachable: try again next round
+            print(f"funnel watchdog: {type(e).__name__}: {e}")
+
+
+def check_funnel_now(chat_id: int) -> None:
+    reason = funnel.check(PUBLIC_URL)
+    tg("sendMessage", chat_id=chat_id, text="✅ Mini App доступен извне" if reason is None else
+       f"⚠️ Mini App недоступен извне ({reason}).\n{heal_funnel()}")
 
 
 def run_bot() -> None:
@@ -803,6 +870,8 @@ def main() -> None:
         setup_bot()
         threading.Thread(target=run_bot, daemon=True).start()
         print(f"bot @{bot_username} polling")
+    if is_funnel():
+        threading.Thread(target=run_funnel_watchdog, daemon=True).start()
     print(f"listening on :{PORT}")
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
 
