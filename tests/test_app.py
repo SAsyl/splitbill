@@ -1,4 +1,4 @@
-"""End-to-end API check: python test_app.py (no network, OCR stubbed)."""
+"""End-to-end API check: python tests/test_app.py (no network, OCR stubbed)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -13,8 +14,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 os.environ.update(
     DB_PATH=os.path.join(tempfile.mkdtemp(), "t.db"),
     ADMIN_ID="111", ADMIN_NAME="Админ", ADMIN_PHONE="87001234567", ADMIN_BANKS="Freedom,Kaspi",

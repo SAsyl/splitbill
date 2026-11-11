@@ -36,12 +36,12 @@ Telegram-бот + веб-страница, которая внутри Telegram 
    ```bash
    uv venv && uv pip install -r requirements.txt
    cp .env.example .env   # заполнить; узнать свой ADMIN_ID можно у @userinfobot
-   set -a && . ./.env && set +a && .venv/bin/python app.py
+   set -a && . ./.env && set +a && .venv/bin/python src/app.py
    ```
    При старте бот сам регистрирует команды `/new` и `/help` и кнопку «Счёт» рядом с полем ввода. Админу дополнительно видны `/admin` и `/requisites`.
-5. **Автозапуск** — пользовательский systemd-сервис [`splitbill.service`](splitbill.service), root не нужен. Если папка проекта другая, поправьте пути в файле.
+5. **Автозапуск** — пользовательский systemd-сервис [`deploy/splitbill.service`](deploy/splitbill.service), root не нужен. Если папка проекта другая, поправьте пути в файле.
    ```bash
-   mkdir -p ~/.config/systemd/user && cp splitbill.service ~/.config/systemd/user/
+   mkdir -p ~/.config/systemd/user && cp deploy/splitbill.service ~/.config/systemd/user/
    systemctl --user daemon-reload && systemctl --user enable --now splitbill
    loginctl enable-linger $USER    # запуск при включении ноутбука, ещё до входа в систему
    ```
@@ -76,7 +76,7 @@ sudo tailscale set --operator=$USER  # чтобы сервис сам перез
 - Funnel открывает сервис всему интернету. Это нормально: доступ к счёту даёт только случайная ссылка, а админка работает лишь в боте.
 
 **Когда Mini App не открывается («Failed to load», `ERR_CONNECTION_CLOSED`), а бот отвечает.** Бот сам ходит в Telegram, а странице счёта нужен входящий доступ через Funnel. Иногда узел Tailscale перестаёт пускать запросы к ноутбуку: соединение рвётся ещё до него, обычно после смены сети или VPN. Помогает переприменить Funnel (`tailscale funnel reset` и `tailscale funnel --bg 8080`), и сервис делает это сам:
-- каждые 5 минут проверяет страницу снаружи (`funnel.py`): адрес берётся из публичного DNS, потому что локальный MagicDNS отдаёт внутренний адрес Tailscale и пропускает публичный вход;
+- каждые 5 минут проверяет страницу снаружи (`src/funnel.py`): адрес берётся из публичного DNS, потому что локальный MagicDNS отдаёт внутренний адрес Tailscale и пропускает публичный вход;
 - если страница недоступна, переприменяет Funnel и проверяет снова. Админу приходит одно сообщение на сбой и одно, когда всё восстановилось;
 - в `/admin` есть кнопка «🔧 Проверить и починить Mini App», чтобы сделать то же самое сразу.
 
@@ -108,7 +108,7 @@ sudo tailscale set --operator=$USER  # чтобы сервис сам перез
 
 Кнопка «🔍 Распознать» отправляет **все ещё не распознанные фото счёта одним запросом**: длинный чек, снятый в 2–3 кадра, читается как один, и строки на стыке кадров не дублируются.
 
-Модель — `claude-haiku-5-5`, другую задаёт `OCR_MODEL`. Ответ приходит не свободным текстом, а JSON по единой схеме (`ocr.py`, `SCHEMA`):
+Модель — `claude-haiku-5-5`, другую задаёт `OCR_MODEL`. Ответ приходит не свободным текстом, а JSON по единой схеме (`src/ocr.py`, `SCHEMA`):
 
 ```json
 {
@@ -130,7 +130,7 @@ sudo tailscale set --operator=$USER  # чтобы сервис сам перез
 
 ### Почему JSON-схема, а не свободный текст
 
-Если спросить модель «какие товары в чеке», ответ будет читаемым, но каждый раз в новом формате: «2 690,00 каждое (×3)», «4 шт., 760,00», «по 2 990». Программа не может надёжно вытащить из этого цифры. Структурированный вывод (`output_config.format`) заставляет модель ответить строго по схеме, и API гарантирует валидный JSON. Правила для спорных случаев (модификаторы, комбо, упаковка, перекрывающиеся фото) записаны в системном промпте `SYSTEM` в `ocr.py`.
+Если спросить модель «какие товары в чеке», ответ будет читаемым, но каждый раз в новом формате: «2 690,00 каждое (×3)», «4 шт., 760,00», «по 2 990». Программа не может надёжно вытащить из этого цифры. Структурированный вывод (`output_config.format`) заставляет модель ответить строго по схеме, и API гарантирует валидный JSON. Правила для спорных случаев (модификаторы, комбо, упаковка, перекрывающиеся фото) записаны в системном промпте `SYSTEM` в `src/ocr.py`.
 
 ### Защита: только чеки, только картинки и PDF
 
@@ -171,7 +171,7 @@ Systemd-сервис запускается без `~/.local/bin` в `PATH`, п�
 ### Проверить на своих чеках
 
 ```bash
-ANTHROPIC_API_KEY=... .venv/bin/python -c "
+ANTHROPIC_API_KEY=... PYTHONPATH=src .venv/bin/python -c "
 import ocr
 photos = [(d, ocr.sniff(d)) for d in (open(f, 'rb').read() for f in ['1.jpg', '2.pdf'])]
 print(ocr.recognize(photos))"
@@ -181,15 +181,15 @@ print(ocr.recognize(photos))"
 
 ## Файлы
 
-- `app.py` — HTTP API, SQLite, Telegram-бот (long polling)
-- `split.py` — расчёт долей и округление; `python split.py` запускает самопроверку
-- `test_app.py` — сквозная проверка API без сети: подпись Telegram, реквизиты, фото, OCR через заглушку
-- `ocr.py` — фото → позиции
-- `funnel.py` — проверка Mini App снаружи и перезапуск Tailscale Funnel
-- `index.html` — весь интерфейс
-- `splitbill.service` — systemd-сервис для автозапуска
-- `logo.svg` — логотип (исходник); `logo-512.png` — аватар бота: @BotFather → `/setuserpic`. Иконка вкладки встроена в `index.html`
-- `miniapp-640x360.svg` / `.png` — превью Mini App, которое показывается при пересылке ссылки на приложение: @BotFather → `/myapps` → бот → «Edit Photo»
+- `src/app.py` — HTTP API, SQLite, Telegram-бот (long polling)
+- `src/split.py` — расчёт долей и округление; `python src/split.py` запускает самопроверку
+- `tests/test_app.py` — сквозная проверка API без сети: подпись Telegram, реквизиты, фото, OCR через заглушку
+- `src/ocr.py` — фото → позиции
+- `src/funnel.py` — проверка Mini App снаружи и перезапуск Tailscale Funnel
+- `src/index.html` — весь интерфейс
+- `deploy/splitbill.service` — systemd-сервис для автозапуска
+- `assets/logo.svg` — логотип (исходник); `assets/logo-512.png` — аватар бота: @BotFather → `/setuserpic`. Иконка вкладки встроена в `index.html`
+- `assets/miniapp-640x360.svg` / `.png` — превью Mini App, которое показывается при пересылке ссылки на приложение: @BotFather → `/myapps` → бот → «Edit Photo»
 
 ## Ограничения
 
