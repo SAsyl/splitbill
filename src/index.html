@@ -144,7 +144,7 @@ function shrink(file) {
 // Slow request: block polling and buttons until it finishes
 async function task(progress, request, done) {
   busy = true; toast(progress, 60000); render();
-  try { bill = await request(); toast(done); }
+  try { bill = await request(); typeof done === 'function' ? toast(done(bill), 4500) : toast(done); }
   catch (e) { toast(e.message); }
   finally { busy = false; render(); }
 }
@@ -169,7 +169,8 @@ function uploadPhotos(files) {
 }
 
 const recognize = () => task('Распознаю чек… 10–20 секунд', () =>
-  api(`/api/bills/${billId}/ocr`, { method: 'POST' }), 'Готово — проверьте позиции');
+  api(`/api/bills/${billId}/ocr`, { method: 'POST' }),
+  b => b.ocr_quota ? `Готово — проверьте позиции. Распознавание: ${b.ocr_quota}` : 'Готово — проверьте позиции');
 
 function nameOf(pid) { return bill.people[pid]?.name || '?'; }
 
