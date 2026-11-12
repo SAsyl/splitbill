@@ -33,7 +33,8 @@ BASE = "http://127.0.0.1:{port}"
 
 def init_data(user_id: int, token: str = TOKEN) -> str:
     """Build Telegram Mini App initData signed the way Telegram does it."""
-    params = {"auth_date": str(int(time.time())), "user": json.dumps({"id": user_id, "first_name": "T"})}
+    user = {"id": user_id, "first_name": "T", "username": f"user{user_id}"}
+    params = {"auth_date": str(int(time.time())), "user": json.dumps(user)}
     check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
     secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
     params["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
@@ -96,6 +97,73 @@ def check_claude_code_backend() -> None:
         ocr.BACKEND, ocr.CLAUDE_BIN = saved
 
 
+def scan(uid: int) -> tuple[int, Any]:
+    """One recognition by this Telegram user on a fresh bill with one photo."""
+    _, bill = call("/api/bills", {"title": "OCR"})
+    call(f"/api/bills/{bill['id']}/photos", raw=b"\xff\xd8\xff scan", mime="image/jpeg")
+    return call(f"/api/bills/{bill['id']}/ocr", raw=b"", uid=uid)
+
+
+def check_ocr_access() -> None:
+    """Trial, one access request, approve with a limit, reject, admin exemption, global cap."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    app.tg = lambda method, **p: calls.append((method, p)) or {}
+    def requests() -> list[dict[str, Any]]:
+        return [p for m, p in calls if m == "sendMessage" and "Запрос доступа" in p.get("text", "")]
+    def press(data: str) -> None:
+        msg = {"chat": {"id": 111}, "message_id": 9, "text": "req"}
+        app.on_callback({"id": "q", "from": {"id": 111}, "data": data, "message": msg})
+
+    assert "только в Telegram" in scan(0)[1]["error"]  # anonymous browser: no OCR at all
+    app.set_setting("ocr", False)
+    assert "выключено" in app.limits_text(777) and "Распознавание" not in app.start_text(777)
+    app.set_setting("ocr", True)
+    # A new user sees the trial in /start, /limits and under a sent photo before trying
+    assert "осталось 2 из 2 бесплатных" in app.start_text(777)
+    assert "осталось 2 из 2 бесплатных" in app.limits_text(777)
+    assert "Нажмите «Распознать»" in app.photo_hint(777) and "2 из 2" in app.photo_hint(777)
+    assert "без лимита (вы админ)" in app.start_text(111)
+    assert scan(777)[1]["ocr_quota"] == "осталось 1 из 2 бесплатных"  # shown in the Mini App after a scan
+    assert scan(777)[0] == 200  # trial
+    assert "бесплатные закончились" in app.limits_text(777)
+    status, b = scan(777)
+    assert status == 400 and "запрос" in b["error"] and len(requests()) == 1
+    request = requests()[0]
+    assert "@user777" in request["text"] and "T" in request["text"] and request["chat_id"] == 111
+    buttons = [btn["callback_data"] for row in request["reply_markup"]["inline_keyboard"] for btn in row]
+    assert buttons == ["ocr:tg777:3", "ocr:tg777:5", "ocr:tg777:10", "ocr:tg777:unlimited", "ocr:tg777:off"]
+    assert "ждёт решения" in scan(777)[1]["error"] and len(requests()) == 1  # no second request
+    assert "ждёт решения" in app.photo_hint(777) and "вручную" in app.photo_hint(777)
+
+    # Only the admin can decide
+    app.on_callback({"id": "q", "from": {"id": 777}, "data": "ocr:tg777:unlimited", "message": {}})
+    assert calls[-1] == ("answerCallbackQuery", {"callback_query_id": "q", "text": "Недоступно"})
+    press("ocr:tg777:3")
+    assert ("sendMessage", {"chat_id": 777, "text": "✅ Доступ к распознаванию чеков открыт: 3 в месяц."}) in calls
+    assert scan(777)[1]["ocr_quota"] == "осталось 2 из 3 в этом месяце"
+    assert [scan(777)[0] for _ in range(3)] == [200, 200, 400]  # 3 a month, trial scans not counted
+    assert "исчерпан" in app.limits_text(777)
+    assert "в месяц" in scan(777)[1]["error"]
+    user = app.list_ocr_users()[0]
+    user["month"] = "2000-01"  # a new month starts the count again
+    with app._db() as conn:
+        app.save_ocr_user(conn, user)
+    assert scan(777)[0] == 200
+    app.on_message({"chat": {"id": 111, "type": "private"}, "from": {"id": 111}, "text": "/ocr @USER777 unlimited"})
+    assert scan(777)[0] == 200
+    assert app.list_ocr_users()[0]["used"] == 7  # stored in the DB, survives restarts
+
+    # Rejected users stay at the trial and cannot ask again
+    scan(888), scan(888), scan(888)
+    press("ocr:tg888:off")
+    assert "не открыл" in scan(888)[1]["error"] and len(requests()) == 2
+
+    # Admin: no per-user limit, but the global cap applies to everyone
+    assert [scan(111)[0] for _ in range(3)] == [200, 200, 200]
+    app.OCR_DAILY_LIMIT = app._ocr_usage["count"]
+    assert "Дневной лимит" in scan(111)[1]["error"] and "Дневной лимит" in scan(777)[1]["error"]
+
+
 def main() -> None:
     global BASE
     check_claude_code_backend()  # before ocr.recognize gets stubbed below
@@ -145,7 +213,7 @@ def main() -> None:
     app.set_setting("ocr", True)
     seen: list[list[tuple[bytes, str]]] = []
     ocr.recognize = lambda images: seen.append(images) or {"items": [{"name": "Плов", "price": 500000}], "service_pct": 10.0, "total": 550000, "place": "Нават"}
-    status, b = call(f"{path}/ocr", raw=b"")
+    status, b = call(f"{path}/ocr", raw=b"", uid=111)
     assert status == 200 and b["items"][0]["name"] == "Плов" and b["service_pct"] == 10.0
     assert seen == [[(png, "image/png"), (b"\xff\xd8\xff part 2", "image/jpeg")]]  # both parts in one request
     assert all(p["ocr"] for p in b["photos"]) and b["place"] == "Нават"
@@ -221,6 +289,7 @@ def main() -> None:
     assert step(True, None) is False and sent_texts[-1] == "✅ Mini App снова доступен"
     assert step(False, "eof", None) is False and "✅ Перезапустил" in sent_texts[-1] and len(sent_texts) == 3
 
+    check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")
 

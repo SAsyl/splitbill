@@ -9,7 +9,8 @@ Env:
     ADMIN_NAME, ADMIN_PHONE, ADMIN_BANKS   default payee requisites (editable via /requisites)
     ANTHROPIC_API_KEY   receipt recognition via the API; without it local Claude Code is used
     OCR_BACKEND         force "api" or "claude-code"; CLAUDE_BIN: path to the claude CLI
-    OCR_DAILY_LIMIT     max recognitions per day (default 100)
+    OCR_DAILY_LIMIT     max recognitions per day for everyone together (default 20)
+    OCR_TRIAL_SCANS     free recognitions per new user before admin approval (default 2)
     BILL_TTL_DAYS       bills are deleted this many days after the last change (default 14)
     PORT, DB_PATH
 """
@@ -33,7 +34,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import takewhile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 import funnel
 import ocr
@@ -44,7 +45,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 WEBAPP_SHORT_NAME = os.environ.get("WEBAPP_SHORT_NAME", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID") or 0)
 ADMIN_PID = f"tg{ADMIN_ID}"
-OCR_DAILY_LIMIT = int(os.environ.get("OCR_DAILY_LIMIT", "100"))
+OCR_DAILY_LIMIT = int(os.environ.get("OCR_DAILY_LIMIT", "20"))
+OCR_TRIAL_SCANS = int(os.environ.get("OCR_TRIAL_SCANS", "2"))
+MAX_USER_MONTHLY_LIMIT = 1000
 BILL_TTL_DAYS = int(os.environ.get("BILL_TTL_DAYS", "14"))
 PURGE_INTERVAL = 6 * 3600
 PORT = int(os.environ.get("PORT", "8080"))
@@ -73,6 +76,18 @@ class BadRequest(Exception):
     """Client sent something invalid; message is shown to the user."""
 
 
+class OcrUser(TypedDict):
+    """OCR access of one Telegram user. status: trial | pending | approved | rejected."""
+    pid: str
+    name: str
+    username: str
+    status: str
+    monthly_limit: int | None  # approved only; None means unlimited
+    used: int  # all-time recognitions, trial included
+    month: str  # "YYYY-MM" of month_used
+    month_used: int  # approved recognitions this month; trial scans do not count
+
+
 # ---------- storage ----------
 
 # ponytail: one global lock for read-modify-write; per-bill locks if traffic ever matters
@@ -90,6 +105,11 @@ def init_db() -> None:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS photos "
             "(id TEXT PRIMARY KEY, bill_id TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ocr_users (pid TEXT PRIMARY KEY, name TEXT NOT NULL, "
+            "username TEXT NOT NULL, status TEXT NOT NULL, monthly_limit INTEGER, used INTEGER NOT NULL, "
+            "month TEXT NOT NULL, month_used INTEGER NOT NULL)"
         )
         rows = conn.execute("SELECT data FROM bills").fetchall()
     # ponytail: bills saved before timestamps existed start their TTL now; remove after one TTL cycle
@@ -240,6 +260,12 @@ def view(bill: Bill) -> dict[str, Any]:
 
 def verified_pid(init_data: str) -> str | None:
     """Person id from Telegram Mini App initData, only if its signature is valid."""
+    user = verified_user(init_data)
+    return None if user is None else f"tg{user['id']}"
+
+
+def verified_user(init_data: str) -> dict[str, Any] | None:
+    """Telegram user (id, first_name, username...) from initData, only if its signature is valid."""
     if not init_data or not BOT_TOKEN:
         return None
     params = dict(urllib.parse.parse_qsl(init_data))
@@ -251,7 +277,10 @@ def verified_pid(init_data: str) -> str | None:
         return None
     if time.time() - int(params.get("auth_date", "0")) > INIT_DATA_TTL:
         return None
-    return f"tg{json.loads(params['user'])['id']}"
+    user = json.loads(params["user"])
+    if not isinstance(user, dict) or not isinstance(user.get("id"), int):
+        return None
+    return user
 
 
 def _require_self(pid: str, body: dict[str, Any]) -> None:
@@ -456,28 +485,166 @@ def add_photo(bill_id: str, data: bytes) -> Bill:
     return bill
 
 
-# ponytail: in-memory counter, resets on restart; move to the settings table if that matters
+# ponytail: global safety cap in memory, resets on restart; per-user counters live in ocr_users
 _ocr_usage = {"day": "", "count": 0}
 
+OCR_COLUMNS = ("pid", "name", "username", "status", "monthly_limit", "used", "month", "month_used")
+TRIAL_OVER = ("Бесплатные распознавания закончились. Я отправил админу запрос на доступ, "
+              "а пока позиции можно внести вручную.")
+DENIALS = {
+    "pending": "Запрос на доступ к распознаванию ждёт решения админа. Пока позиции можно внести вручную.",
+    "rejected": "Админ не открыл вам доступ к распознаванию. Позиции можно внести вручную.",
+}
 
-def take_ocr_quota() -> None:
-    today = time.strftime("%Y-%m-%d")
-    with _lock:
+
+def _ocr_user_row(row: tuple[Any, ...]) -> OcrUser:
+    pid, name, username, status, monthly_limit, used, month, month_used = row
+    return OcrUser(pid=pid, name=name, username=username, status=status, monthly_limit=monthly_limit,
+                   used=used, month=month, month_used=month_used)
+
+
+def load_ocr_user(conn: sqlite3.Connection, pid: str) -> OcrUser | None:
+    row = conn.execute(f"SELECT {', '.join(OCR_COLUMNS)} FROM ocr_users WHERE pid = ?", (pid,)).fetchone()
+    return None if row is None else _ocr_user_row(row)
+
+
+def save_ocr_user(conn: sqlite3.Connection, user: OcrUser) -> None:
+    conn.execute("INSERT OR REPLACE INTO ocr_users VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
+        user["pid"], user["name"], user["username"], user["status"],
+        user["monthly_limit"], user["used"], user["month"], user["month_used"]))
+
+
+def list_ocr_users() -> list[OcrUser]:
+    with _db() as conn:
+        rows = conn.execute(f"SELECT {', '.join(OCR_COLUMNS)} FROM ocr_users ORDER BY used DESC").fetchall()
+    return [_ocr_user_row(row) for row in rows]
+
+
+def new_ocr_user(pid: str) -> OcrUser:
+    return OcrUser(pid=pid, name="", username="", status="trial", monthly_limit=None, used=0, month="", month_used=0)
+
+
+def ocr_user_for(conn: sqlite3.Connection, tg_user: dict[str, Any]) -> OcrUser:
+    """Stored record of this Telegram user (a new one starts on trial) with fresh name and username."""
+    pid = f"tg{tg_user['id']}"
+    user = load_ocr_user(conn, pid) or new_ocr_user(pid)
+    name = " ".join(str(tg_user.get(k) or "") for k in ("first_name", "last_name")).strip()
+    user["name"] = name[:64] or pid
+    user["username"] = str(tg_user.get("username") or "")[:32]
+    return user
+
+
+def month_used(user: OcrUser, month: str) -> int:
+    return user["month_used"] if user["month"] == month else 0
+
+
+def user_denial(user: OcrUser, month: str) -> str | None:
+    """Why this user may not recognize now, or None if allowed."""
+    if user["status"] == "trial":
+        return None if user["used"] < OCR_TRIAL_SCANS else TRIAL_OVER
+    if user["status"] in DENIALS:
+        return DENIALS[user["status"]]
+    limit = user["monthly_limit"]
+    if limit is not None and month_used(user, month) >= limit:
+        return f"Ваш лимит — {limit} распознаваний в месяц, он исчерпан. Новые будут с 1-го числа."
+    return None
+
+
+def quota_text(user: OcrUser, month: str) -> str:
+    """What is left for this user, in words they understand."""
+    match user["status"]:
+        case "trial":
+            left = max(OCR_TRIAL_SCANS - user["used"], 0)
+            if left:
+                return f"осталось {left} из {OCR_TRIAL_SCANS} бесплатных"
+            return "бесплатные закончились. Нажмите «Распознать» в счёте, и я отправлю админу запрос на доступ"
+        case "pending":
+            return "запрос на доступ ждёт решения админа"
+        case "rejected":
+            return "недоступно, позиции вносятся вручную"
+    limit = user["monthly_limit"]
+    if limit is None:
+        return "без лимита"
+    left = max(limit - month_used(user, month), 0)
+    return f"осталось {left} из {limit} в этом месяце" if left else \
+        f"лимит {limit} в месяц исчерпан, новые будут с 1-го числа"
+
+
+def ocr_quota(tg_id: int) -> tuple[bool, str]:
+    """(can recognize right now, what is left) for a Telegram user; the admin has no personal limit."""
+    pid = f"tg{tg_id}"
+    if pid == ADMIN_PID:
+        return True, "без лимита (вы админ)"
+    month = time.strftime("%Y-%m")
+    with _db() as conn:
+        user = load_ocr_user(conn, pid) or new_ocr_user(pid)
+    return user_denial(user, month) is None, quota_text(user, month)
+
+
+def count_ocr_use(user: OcrUser, month: str) -> None:
+    if user["status"] == "approved":  # trial scans are free: "3 a month" means 3 after approval
+        user["month_used"] = month_used(user, month) + 1
+        user["month"] = month
+    user["used"] += 1
+
+
+def take_ocr_quota(tg_user: dict[str, Any] | None) -> None:
+    """Per-user limit (admin is exempt), then the global OCR_DAILY_LIMIT; raises BadRequest if denied."""
+    if tg_user is None:
+        raise BadRequest("Распознавание работает только в Telegram: откройте счёт через бота")
+    today, month = time.strftime("%Y-%m-%d"), time.strftime("%Y-%m")
+    with _lock, _db() as conn:
+        user = None if f"tg{tg_user['id']}" == ADMIN_PID else ocr_user_for(conn, tg_user)
+        denial = user_denial(user, month) if user else None
+        newly_pending = user is not None and denial == TRIAL_OVER
+        if newly_pending and user is not None:
+            user["status"] = "pending"  # exactly one request: later attempts see "pending"
         if _ocr_usage["day"] != today:
             _ocr_usage.update(day=today, count=0)
-        if _ocr_usage["count"] >= OCR_DAILY_LIMIT:
-            raise BadRequest("Дневной лимит распознаваний исчерпан, попробуйте завтра")
-        _ocr_usage["count"] += 1
+        if denial is None and _ocr_usage["count"] >= OCR_DAILY_LIMIT:
+            denial = "Дневной лимит распознаваний исчерпан, попробуйте завтра"
+        if denial is None:
+            _ocr_usage["count"] += 1
+            if user is not None:
+                count_ocr_use(user, month)
+        if user is not None:
+            save_ocr_user(conn, user)
+    if user is not None and newly_pending:
+        request_ocr_access(user)  # outside the lock: network call
+    if denial:
+        raise BadRequest(denial)
 
 
-def recognize_pending(bill_id: str) -> Bill:
+def parse_access(value: str) -> tuple[str, int | None]:
+    """'unlimited' | 'off' | N (scans per month) -> (status, monthly_limit)."""
+    if value == "unlimited":
+        return "approved", None
+    if value == "off":
+        return "rejected", None
+    if value.isdigit() and 1 <= int(value) <= MAX_USER_MONTHLY_LIMIT:
+        return "approved", int(value)
+    raise BadRequest(f"Лимит: число от 1 до {MAX_USER_MONTHLY_LIMIT}, unlimited или off")
+
+
+def set_ocr_access(pid: str, value: str) -> OcrUser:
+    status, limit = parse_access(value)
+    with _lock, _db() as conn:
+        user = load_ocr_user(conn, pid)
+        if user is None:
+            raise BadRequest("Такой пользователь ещё не пользовался распознаванием")
+        user["status"], user["monthly_limit"] = status, limit
+        save_ocr_user(conn, user)
+    return user
+
+
+def recognize_pending(bill_id: str, tg_user: dict[str, Any] | None) -> Bill:
     """All not-yet-recognized photos in one request: parts of one long bill are read together."""
     if not settings()["ocr"]:
         raise BadRequest("Распознавание выключено администратором")
     pending = [p["id"] for p in load(bill_id)["photos"] if not p["ocr"]]
     if not pending:
         raise BadRequest("Нет новых фото для распознавания")
-    take_ocr_quota()
+    take_ocr_quota(tg_user)
     receipt = ocr.recognize([load_photo(bill_id, pid) for pid in pending])  # slow: outside the lock
     with _lock:
         bill = load(bill_id)
@@ -571,7 +738,9 @@ class Handler(BaseHTTPRequestHandler):
             case ["api", "bills", bill_id, "photos"]:
                 return view(add_photo(bill_id, self._body()))
             case ["api", "bills", bill_id, "ocr"]:
-                return view(recognize_pending(bill_id))
+                tg_user = verified_user(self.headers.get("X-Init-Data", ""))
+                bill = recognize_pending(bill_id, tg_user)
+                return {**view(bill), "ocr_quota": ocr_quota(tg_user["id"])[1] if tg_user else ""}
         raise KeyError(self.path)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -642,9 +811,16 @@ def on_photo(chat_id: int, msg: dict[str, Any]) -> None:
         while len(_album_bills) > MAX_TRACKED_ALBUMS:
             _album_bills.pop(next(iter(_album_bills)))
     add_photo(bill["id"], data)
-    hint = ("Нажмите «Распознать» в счёте — все фото прочитаются как один чек."
-            if settings()["ocr"] else "Внесите позиции вручную.")
-    reply_with_bill(chat_id, bill, f"Счёт создан, фото чека прикреплено. {hint} 👇")
+    reply_with_bill(chat_id, bill, f"Счёт создан, фото чека прикреплено. {photo_hint(msg['from']['id'])} 👇")
+
+
+def photo_hint(tg_id: int) -> str:
+    if not settings()["ocr"]:
+        return "Внесите позиции вручную."
+    allowed, left = ocr_quota(tg_id)
+    if allowed:
+        return f"Нажмите «Распознать» в счёте — все фото прочитаются как один чек ({left})."
+    return f"Распознавание: {left}. Внесите позиции вручную."
 
 
 def bill_label(b: dict[str, Any]) -> str:
@@ -676,6 +852,7 @@ def admin_panel() -> tuple[str, dict[str, Any]]:
         f"Распознаваний сегодня: {_ocr_usage['count']} / {OCR_DAILY_LIMIT}\n"
         f"Реквизиты по умолчанию: {requisites}\n\n"
         "Изменить реквизиты (банки по приоритету):\n/requisites 87001234567 Freedom Kaspi\n\n"
+        f"/ocr — кто пользуется распознаванием и их лимиты (новым — {OCR_TRIAL_SCANS} бесплатно)\n"
         f"/bills — все счета (хранятся {BILL_TTL_DAYS} дней после последнего изменения)"
     )
     button = {"text": "Выключить OCR" if s["ocr"] else "Включить OCR", "callback_data": "ocr_toggle"}
@@ -693,8 +870,101 @@ def parse_requisites(text: str) -> tuple[str, list[str]]:
     return "".join(phone_parts), rest.split(",") if "," in rest else rest.split()
 
 
+def limit_text(user: OcrUser) -> str:
+    return "без лимита" if user["monthly_limit"] is None else f"{user['monthly_limit']} в месяц"
+
+
+def describe_access(user: OcrUser) -> str:
+    match user["status"]:
+        case "trial":
+            return f"пробный, {user['used']} из {OCR_TRIAL_SCANS}"
+        case "pending":
+            return "ждёт решения"
+        case "rejected":
+            return "отклонён"
+    if user["monthly_limit"] is None:
+        return "без лимита"
+    return f"{limit_text(user)}, в этом месяце {month_used(user, time.strftime('%Y-%m'))}"
+
+
+def user_label(user: OcrUser) -> str:
+    username = f"@{user['username']}" if user["username"] else "без username"
+    return f"{user['name']} ({username}, id {user['pid'][2:]})"
+
+
+def access_keyboard(pid: str) -> dict[str, Any]:
+    def button(text: str, value: str) -> dict[str, str]:
+        return {"text": text, "callback_data": f"ocr:{pid}:{value}"}
+    return {"inline_keyboard": [
+        [button("✅ 3 в месяц", "3"), button("✅ 5 в месяц", "5"), button("✅ 10 в месяц", "10")],
+        [button("♾ Без лимита", "unlimited"), button("❌ Отклонить", "off")],
+    ]}
+
+
+def request_ocr_access(user: OcrUser) -> None:
+    """Ask the admin once, right after the user's trial runs out."""
+    if not ADMIN_ID:
+        return
+    tg("sendMessage", chat_id=ADMIN_ID, reply_markup=access_keyboard(user["pid"]), text=(
+        f"🔍 Запрос доступа к распознаванию\n{user_label(user)}\n"
+        f"Использовал {user['used']} бесплатных из {OCR_TRIAL_SCANS}.\n\n"
+        f"Другой лимит в месяц: /ocr {user['pid'][2:]} 7"
+    ))
+
+
+def grant_ocr_access(pid: str, value: str) -> OcrUser:
+    """Apply the admin's decision and tell the user; they may never have started the bot."""
+    user = set_ocr_access(pid, value)
+    text = ("❌ Админ не открыл доступ к распознаванию чеков." if user["status"] == "rejected"
+            else f"✅ Доступ к распознаванию чеков открыт: {limit_text(user)}.")
+    try:
+        tg("sendMessage", chat_id=int(pid[2:]), text=text)
+    except RuntimeError as e:
+        print(f"ocr access: user not notified: {e}")
+    return user
+
+
+def find_ocr_pid(target: str) -> str:
+    """'@username' or a numeric Telegram id -> pid of a known OCR user."""
+    users = list_ocr_users()
+    if target.startswith("@"):
+        matches = [u["pid"] for u in users if u["username"].lower() == target[1:].lower()]
+    else:
+        matches = [u["pid"] for u in users if u["pid"] == f"tg{target}"]
+    if not matches:
+        raise BadRequest(f"{target}: такой пользователь ещё не пользовался распознаванием")
+    return matches[0]
+
+
+def ocr_users_text() -> str:
+    users = list_ocr_users()
+    lines = [f"• {user_label(u)} — {describe_access(u)}, всего {u['used']}" for u in users[:50]]
+    return (
+        "🔍 Распознавание по пользователям\n\n" + ("\n".join(lines) or "Пока никто не пользовался.") +
+        "\n\nИзменить: /ocr @username 5 (в месяц) | unlimited | off"
+    )
+
+
+def on_ocr_command(chat_id: int, text: str) -> None:
+    args = text.split()[1:]
+    if not args:
+        tg("sendMessage", chat_id=chat_id, text=ocr_users_text())
+        return
+    try:
+        if len(args) != 2:
+            raise BadRequest("Формат: /ocr @username 5 | unlimited | off")
+        user = grant_ocr_access(find_ocr_pid(args[0]), args[1].lower())
+    except BadRequest as e:
+        tg("sendMessage", chat_id=chat_id, text=str(e))
+        return
+    tg("sendMessage", chat_id=chat_id, text=f"Готово: {user_label(user)} — {describe_access(user)}")
+
+
 def on_admin_command(msg: dict[str, Any], text: str) -> None:
     chat_id = msg["chat"]["id"]
+    if text.startswith("/ocr"):
+        on_ocr_command(chat_id, text)
+        return
     if text.startswith("/requisites"):
         phone, banks = parse_requisites(text)
         try:
@@ -708,9 +978,27 @@ def on_admin_command(msg: dict[str, Any], text: str) -> None:
     tg("sendMessage", chat_id=chat_id, text=panel, reply_markup=keyboard)
 
 
+def on_access_decision(query: dict[str, Any]) -> None:
+    """Approve / Reject button under an access request: 'ocr:<pid>:<value>'."""
+    _, pid, value = query["data"].split(":", 2)
+    try:
+        user = grant_ocr_access(pid, value)
+    except BadRequest as e:
+        tg("answerCallbackQuery", callback_query_id=query["id"], text=str(e), show_alert=True)
+        return
+    msg = query["message"]
+    tg("editMessageText", chat_id=msg["chat"]["id"], message_id=msg["message_id"],
+       text=f"{msg.get('text', '')}\n\nРешение: {describe_access(user)}")
+    tg("answerCallbackQuery", callback_query_id=query["id"], text=describe_access(user))
+
+
 def on_callback(query: dict[str, Any]) -> None:
-    if query["from"]["id"] != ADMIN_ID or query.get("data") not in {"ocr_toggle", "funnel_fix"}:
+    data = query.get("data") or ""
+    if query["from"]["id"] != ADMIN_ID or not (data in {"ocr_toggle", "funnel_fix"} or data.startswith("ocr:")):
         tg("answerCallbackQuery", callback_query_id=query["id"], text="Недоступно")
+        return
+    if data.startswith("ocr:"):
+        on_access_decision(query)
         return
     if query["data"] == "funnel_fix":
         tg("answerCallbackQuery", callback_query_id=query["id"], text="Проверяю, до 40 секунд…")
@@ -729,16 +1017,43 @@ def on_callback(query: dict[str, Any]) -> None:
     tg("answerCallbackQuery", callback_query_id=query["id"], text="OCR включён" if enable else "OCR выключен")
 
 
+def limits_text(tg_id: int) -> str:
+    if not settings()["ocr"]:
+        return "🔍 Распознавание чеков сейчас выключено админом. Позиции вносятся вручную."
+    return (
+        f"🔍 Распознавание чеков: {ocr_quota(tg_id)[1]}.\n\n"
+        f"Бесплатных распознаваний у нового пользователя: {OCR_TRIAL_SCANS}. "
+        "Когда они закончатся, бот сам попросит у админа доступ, и он решит, сколько распознаваний "
+        "дать в месяц. Позиции всегда можно внести вручную."
+    )
+
+
+def start_text(tg_id: int) -> str:
+    ocr_line = ""
+    if settings()["ocr"]:
+        ocr_line = f"\n\n🔍 Распознавание чеков: {ocr_quota(tg_id)[1]}. /limits — подробнее."
+    return (
+        "Делю счёт без калькулятора.\n\n"
+        "📸 Пришлите фото чека — создам счёт. Длинный чек — несколько фото одним альбомом.\n"
+        "✍️ /new [название] — пустой счёт.\n"
+        f"📋 /bills — ваши счета за {BILL_TTL_DAYS} дней.\n\n"
+        "Потом каждый открывает ссылку и отмечает, что ел. "
+        f"Суммы округляются так, что сходятся без остатка.{ocr_line}"
+    )
+
+
 def on_message(msg: dict[str, Any]) -> None:
     chat_id = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
     is_admin = bool(ADMIN_ID) and msg.get("from", {}).get("id") == ADMIN_ID and msg["chat"]["type"] == "private"
     if msg.get("photo") or is_bill_document(msg):
         on_photo(chat_id, msg)
-    elif is_admin and re.match(r"^/(admin|requisites)\b", text):
+    elif is_admin and re.match(r"^/(admin|requisites|ocr)\b", text):
         on_admin_command(msg, text)
     elif re.match(r"^/bills\b", text):
         on_bills(msg)
+    elif re.match(r"^/limits\b", text):
+        tg("sendMessage", chat_id=chat_id, text=limits_text(msg["from"]["id"]))
     elif re.match(r"^/(new|split)(@\w+)?", text):
         title = text.split(maxsplit=1)[1] if " " in text else msg["chat"].get("title", "Счёт")
         bill = create_bill(title, f"tg{msg['from']['id']}")
@@ -746,14 +1061,7 @@ def on_message(msg: dict[str, Any]) -> None:
     elif text.startswith("/start") or text.startswith("/help"):
         if is_admin:
             setup_admin_commands()
-        tg("sendMessage", chat_id=chat_id, text=(
-            "Делю счёт без калькулятора.\n\n"
-            "📸 Пришлите фото чека — создам счёт. Длинный чек — несколько фото одним альбомом.\n"
-            "✍️ /new [название] — пустой счёт.\n"
-            f"📋 /bills — ваши счета за {BILL_TTL_DAYS} дней.\n\n"
-            "Потом каждый открывает ссылку и отмечает, что ел. "
-            "Суммы округляются так, что сходятся без остатка."
-        ))
+        tg("sendMessage", chat_id=chat_id, text=start_text(msg["from"]["id"]))
 
 
 def handle_safely(update: dict[str, Any]) -> None:
@@ -835,6 +1143,7 @@ def run_bot() -> None:
 PUBLIC_COMMANDS = [
     {"command": "new", "description": "Новый счёт: /new Пятница"},
     {"command": "bills", "description": "Мои счета"},
+    {"command": "limits", "description": "Сколько распознаваний чеков осталось"},
     {"command": "help", "description": "Как пользоваться"},
 ]
 
@@ -847,6 +1156,7 @@ def setup_admin_commands() -> None:
         tg("setMyCommands", scope={"type": "chat", "chat_id": ADMIN_ID}, commands=PUBLIC_COMMANDS + [
             {"command": "admin", "description": "Админка: OCR, реквизиты"},
             {"command": "requisites", "description": "Реквизиты: /requisites 8700… Freedom Kaspi"},
+            {"command": "ocr", "description": "Распознавание: пользователи и лимиты"},
         ])
     except RuntimeError as e:
         print(f"admin menu not set ({e}): open the bot from ADMIN_ID and press Start")
