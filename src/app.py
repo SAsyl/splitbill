@@ -1078,6 +1078,8 @@ def handle_safely(update: dict[str, Any]) -> None:
 
 FUNNEL_CHECK_INTERVAL = 5 * 60
 FUNNEL_SETTLE = 20  # seconds for the ingress to pick the node up again
+FUNNEL_CONFIRM_TRIES = 3  # a lone TLS timeout is a network blip, not an outage
+FUNNEL_RETRY_DELAY = 20
 
 
 def notify_admin(text: str) -> None:
@@ -1097,9 +1099,21 @@ def heal_funnel() -> str:
         f"❌ Перезапустил Funnel, но Mini App всё ещё недоступен: {reason}"
 
 
+def confirmed_funnel_failure() -> str | None:
+    """Reason the Mini App is down, only if every one of the spaced checks fails; else None."""
+    reason = None
+    for attempt in range(FUNNEL_CONFIRM_TRIES):
+        if attempt:
+            time.sleep(FUNNEL_RETRY_DELAY)
+        reason = funnel.check(PUBLIC_URL)
+        if reason is None:
+            return None
+    return reason
+
+
 def funnel_watchdog_step(alerted: bool) -> bool:
     """One check-and-heal round; returns whether the admin now knows the Mini App is down."""
-    reason = funnel.check(PUBLIC_URL)
+    reason = confirmed_funnel_failure()
     if reason is None:
         if alerted:
             notify_admin("✅ Mini App снова доступен")

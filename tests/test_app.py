@@ -274,20 +274,25 @@ def main() -> None:
     app.on_message({**doc, "document": {"file_id": "d2", "mime_type": "application/x-sh"}})
     assert sent == ["sendMessage"] and app.list_bills("tg556") == []
 
-    # Funnel watchdog: heals and alerts once per outage, reports recovery
-    app.FUNNEL_SETTLE = 0
+    # Funnel watchdog: ignores blips, heals and alerts once per outage, reports recovery
+    app.FUNNEL_SETTLE = app.FUNNEL_RETRY_DELAY = 0
+    app.FUNNEL_CONFIRM_TRIES = 3
     sent_texts: list[str] = []
+    repairs: list[int] = []
     app.notify_admin = sent_texts.append
-    app.funnel.repair = lambda port: None
-    def step(alerted: bool, *checks: str | None) -> bool:  # checks: before heal, after heal
+    app.funnel.repair = repairs.append
+    def step(alerted: bool, *checks: str | None) -> bool:  # checks: confirm tries, then after heal
         it = iter(checks)
         app.funnel.check = lambda url: next(it)
         return app.funnel_watchdog_step(alerted)
+    down = ("eof", "eof", "eof")
     assert step(False, None) is False and sent_texts == []  # healthy: silent
-    assert step(False, "eof", "eof") is True and sent_texts[-1].startswith("⚠️")  # heal failed: one alert
-    assert step(True, "eof", "eof") is True and len(sent_texts) == 1  # still down: quiet retry
+    assert step(False, "eof", "eof", None) is False and sent_texts == [] and repairs == []  # blip: no reset
+    assert step(False, *down, "eof") is True and sent_texts[-1].startswith("⚠️")  # heal failed: one alert
+    assert step(True, *down, "eof") is True and len(sent_texts) == 1  # still down: quiet retry
     assert step(True, None) is False and sent_texts[-1] == "✅ Mini App снова доступен"
-    assert step(False, "eof", None) is False and "✅ Перезапустил" in sent_texts[-1] and len(sent_texts) == 3
+    assert step(False, *down, None) is False and "✅ Перезапустил" in sent_texts[-1] and len(sent_texts) == 3
+    assert len(repairs) == 3
 
     check_ocr_access()
     server.shutdown()
