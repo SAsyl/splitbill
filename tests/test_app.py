@@ -238,6 +238,24 @@ def check_item_service() -> None:
     assert call(path, {**toggle, "no_service": False}, uid=111)[1]["calc"]["owed"]["tg222"] == 660000  # admin
 
 
+def check_receipt_owner() -> None:
+    """#9: only the creator (or the admin) adds, deletes and recognizes receipt photos."""
+    _, b = call("/api/bills", {"title": "Чек Бека"}, uid=222)
+    path = f"/api/bills/{b['id']}"
+    jpeg = b"\xff\xd8\xff owner"
+    for uid in (0, 333):  # anonymous browser and another Telegram user
+        status, err = call(path + "/photos", raw=jpeg, mime="image/jpeg", uid=uid)
+        assert status == 400 and "только создатель" in err["error"]
+    status, b = call(path + "/photos", raw=jpeg, mime="image/jpeg", uid=222)
+    assert status == 200 and len(b["photos"]) == 1
+    photo_id = b["photos"][0]["id"]
+    assert "только создатель" in call(f"{path}/ocr", raw=b"", uid=333)[1]["error"]
+    assert call(f"{path}/ocr", raw=b"", uid=222)[0] == 200
+    assert call(path, {"op": "delete_photo", "photo_id": photo_id}, uid=333)[0] == 400
+    _, b = call(path, {"op": "delete_photo", "photo_id": photo_id}, uid=111)  # admin
+    assert b["photos"] == []
+
+
 def check_undo() -> None:
     """#8: an accidental "всем" is undone exactly, bad input is refused."""
     _, b = call("/api/bills", {"title": "Отмена"})
@@ -391,6 +409,7 @@ def main() -> None:
     check_portions()
     check_item_service()
     check_undo()
+    check_receipt_owner()
     check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")

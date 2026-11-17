@@ -473,15 +473,15 @@ def op_share_all(bill: Bill, body: dict[str, Any]) -> None:
     item["shares"] = {} if item["shares"] == everyone else everyone
 
 
-def _require_creator(bill: Bill, body: dict[str, Any]) -> None:
-    """Bills made in Telegram are configured by their creator (or the admin); browser bills by anyone."""
+def _require_creator(bill: Bill, uid: str | None, action: str = "менять") -> None:
+    """Bills made in Telegram are managed by their creator (or the admin); browser bills by anyone."""
     creator = bill["creator"]
-    if creator is not None and body.get("_uid") not in (creator, ADMIN_PID):
-        raise BadRequest("Это может менять только создатель счёта")
+    if creator is not None and uid not in (creator, ADMIN_PID):
+        raise BadRequest(f"Это может {action} только создатель счёта")
 
 
 def op_set_item_service(bill: Bill, body: dict[str, Any]) -> None:
-    _require_creator(bill, body)
+    _require_creator(bill, body.get("_uid"))
     item = _item(bill, body)
     if body.get("no_service"):
         item["no_service"] = True
@@ -524,6 +524,7 @@ def op_set_requisites(bill: Bill, body: dict[str, Any]) -> None:
 
 
 def op_delete_photo(bill: Bill, body: dict[str, Any]) -> None:
+    _require_creator(bill, body.get("_uid"), "удалять")
     photo = _photo(bill, _str(body, "photo_id", 64))
     bill["photos"].remove(photo)
     with _db() as conn:
@@ -549,7 +550,7 @@ def apply_op(bill_id: str, body: dict[str, Any]) -> Bill:
 
 # ---------- photos & OCR ----------
 
-def add_photo(bill_id: str, data: bytes) -> Bill:
+def add_photo(bill_id: str, data: bytes, uid: str | None) -> Bill:
     mime = ocr.sniff(data)  # real type from the bytes; the client's Content-Type is ignored
     if mime is None:
         raise BadRequest("Поддерживаются только фото (JPEG, PNG, WebP) и PDF")
@@ -557,6 +558,7 @@ def add_photo(bill_id: str, data: bytes) -> Bill:
         raise BadRequest("Файл должен быть не больше 5 МБ")
     with _lock:
         bill = load(bill_id)
+        _require_creator(bill, uid, "добавлять")
         if len(bill["photos"]) >= MAX_PHOTOS:
             raise BadRequest(f"Не больше {MAX_PHOTOS} фото на счёт")
         photo_id = secrets.token_hex(8)
@@ -724,7 +726,9 @@ def recognize_pending(bill_id: str, tg_user: dict[str, Any] | None) -> Bill:
     """All not-yet-recognized photos in one request: parts of one long bill are read together."""
     if not settings()["ocr"]:
         raise BadRequest("Распознавание выключено администратором")
-    pending = [p["id"] for p in load(bill_id)["photos"] if not p["ocr"]]
+    bill = load(bill_id)
+    _require_creator(bill, None if tg_user is None else f"tg{tg_user['id']}", "распознавать")
+    pending = [p["id"] for p in bill["photos"] if not p["ocr"]]
     if not pending:
         raise BadRequest("Нет новых фото для распознавания")
     take_ocr_quota(tg_user)
@@ -820,7 +824,7 @@ class Handler(BaseHTTPRequestHandler):
             case ["api", "bills", bill_id]:
                 return view(apply_op(bill_id, self._json_body()))
             case ["api", "bills", bill_id, "photos"]:
-                return view(add_photo(bill_id, self._body()))
+                return view(add_photo(bill_id, self._body(), verified_pid(self.headers.get("X-Init-Data", ""))))
             case ["api", "bills", bill_id, "ocr"]:
                 tg_user = verified_user(self.headers.get("X-Init-Data", ""))
                 bill = recognize_pending(bill_id, tg_user)
@@ -887,14 +891,14 @@ def on_photo(chat_id: int, msg: dict[str, Any]) -> None:
         return
     album = msg.get("media_group_id")
     if album in _album_bills:  # next part of a long bill: same bill, no new reply
-        add_photo(_album_bills[album], data)
+        add_photo(_album_bills[album], data, f"tg{msg['from']['id']}")
         return
     bill = create_bill(msg.get("caption") or "Счёт", f"tg{msg['from']['id']}")
     if album:
         _album_bills[album] = bill["id"]
         while len(_album_bills) > MAX_TRACKED_ALBUMS:
             _album_bills.pop(next(iter(_album_bills)))
-    add_photo(bill["id"], data)
+    add_photo(bill["id"], data, bill["creator"])
     reply_with_bill(chat_id, bill, f"Счёт создан, фото чека прикреплено. {photo_hint(msg['from']['id'])} 👇")
 
 

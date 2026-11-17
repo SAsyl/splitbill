@@ -217,7 +217,7 @@ function doneButton() {
 }
 
 const qtyOf = (item) => item.qty || 1;
-// Mirrors the server rule: Telegram bills are configured by their creator or the admin
+// Mirrors the server rule: Telegram bills are managed by their creator or the admin (service, receipt photos)
 const canConfigure = () => !bill.creator || bill.creator === myPid || myPid === bill.admin_pid;
 const claimedOf = (item) => Object.values(item.shares).reduce((a, b) => a + b, 0);
 
@@ -247,14 +247,15 @@ function photosView() {
   if (!bill.photos.length) return '';
   const pending = bill.photos.filter((p) => !p.ocr).length;
   // All new photos go in one request: a long bill shot in parts is read as one
-  const ocrButton = bill.ocr && pending
+  const owner = canConfigure(); // only the creator adds, removes and recognizes receipt photos
+  const ocrButton = owner && bill.ocr && pending
     ? `<button class="primary" data-act="ocr" style="width:100%;margin-bottom:8px" ${busy ? 'disabled' : ''}>🔍 Распознать${pending > 1 ? ` (${pending} фото — как один чек)` : ''}</button>` : '';
   return `<h2>Фото чека</h2>${ocrButton}<div class="photos">${bill.photos.map((p) => `<div class="photo">
     ${p.mime === 'application/pdf'
       ? `<button class="pdf" data-act="pdf" data-id="${p.id}">📄 PDF</button>`
       : `<img src="/api/bills/${billId}/photos/${p.id}" loading="lazy" data-act="zoom" alt="Фото чека">`}
     <div class="row"><span class="muted grow">${p.ocr ? '✓ распознано' : ''}</span>
-    <button data-act="del-photo" data-id="${p.id}" ${busy ? 'disabled' : ''}>✕</button></div></div>`).join('')}</div>`;
+    ${owner ? `<button data-act="del-photo" data-id="${p.id}" ${busy ? 'disabled' : ''}>✕</button>` : ''}</div></div>`).join('')}</div>`;
 }
 
 // Telegram participants edit their own requisites; guests can be filled in by anyone
@@ -346,7 +347,7 @@ function render() {
     </div>
     <h2>Участники <button class="link" data-act="add-person">+ без Telegram</button></h2>
     <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${tgUser && !p.startsWith('tg') ? `<button class="link" data-act="claim" data-pid="${p}">это я</button>` : ''}${p === myPid ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
-    <div class="bar"><button data-act="photo" ${busy ? 'disabled' : ''}>📎 Фото</button><button data-act="share">🔗 Ссылка</button><button class="primary" data-act="copy">📋 Итоги</button></div>`;
+    <div class="bar">${canConfigure() ? `<button data-act="photo" ${busy ? 'disabled' : ''}>📎 Фото</button>` : ''}<button data-act="share">🔗 Ссылка</button><button class="primary" data-act="copy">📋 Итоги</button></div>`;
 }
 
 async function copy(text, done) {
