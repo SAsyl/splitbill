@@ -50,7 +50,8 @@ Telegram-бот + веб-страница, которая внутри Telegram 
    ```bash
    systemctl --user status splitbill        # состояние
    journalctl --user -u splitbill -f        # логи
-   systemctl --user restart splitbill       # после изменения кода или .env
+   deploy/restart.sh                        # после изменения кода или .env: тесты, перезапуск, проверка
+   systemctl --user restart splitbill       # то же без тестов и проверки
    systemctl --user stop splitbill          # перед ручным запуском (два бота с одним токеном = ошибка 409)
    ```
    Если процесс падает или при загрузке ещё нет сети, systemd перезапускает его через 10 секунд. Токены хранятся в `.env`, не в git.
