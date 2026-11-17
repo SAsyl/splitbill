@@ -89,7 +89,7 @@ const store = {
 
 // Identity: Telegram user when inside the Mini App, otherwise a random id kept in this browser
 const tgUser = tg?.initDataUnsafe?.user;
-const myPid = tgUser ? `tg${tgUser.id}` : (store.get('pid') || (() => { const p = 'w' + crypto.randomUUID().slice(0, 12); store.set('pid', p); return p; })());
+let myPid = tgUser ? `tg${tgUser.id}` : (store.get('pid') || (() => { const p = 'w' + crypto.randomUUID().slice(0, 12); store.set('pid', p); return p; })());
 const tgName = tgUser ? [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') : '';
 
 let billId = tg?.initDataUnsafe?.start_param || location.pathname.match(/^\/b\/([\w-]+)/)?.[1];
@@ -174,11 +174,34 @@ const recognize = () => task('Распознаю чек… 10–20 секунд'
 
 function nameOf(pid) { return bill.people[pid]?.name || '?'; }
 
+// Entries made without Telegram: a returning browser user picks theirs instead of joining twice
+const guests = () => Object.keys(bill.people).filter((p) => !p.startsWith('tg'));
+
 function joinView() {
+  const mine = guests().map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>
+    <button class="link" data-act="be" data-pid="${p}">это я</button></div>`).join('');
   return `<h1>${esc(bill.title)}</h1>
     <div class="card"><div class="row"><input id="name" class="grow" placeholder="Ваше имя" maxlength="40" value="${esc(store.get('name') || '')}">
     <button class="primary" data-act="join">Войти</button></div></div>
-    <p class="muted">Имя увидят остальные участники счёта.</p>`;
+    <p class="muted">Имя увидят остальные участники счёта.</p>
+    ${mine ? `<h2>Уже отмечались?</h2><div class="card">${mine}</div>` : ''}`;
+}
+
+function progressView() {
+  const g = bill.progress;
+  if (g.ready) return '';
+  const missing = g.expected > g.joined ? `, в счёте пока ${g.joined} из ${g.expected}` : '';
+  return `<div class="warn">Отметились ${g.done} из ${g.expected}${missing}. Суммы предварительные, пока все не нажмут «Я всё отметил».</div>`;
+}
+
+// Telegram participants confirm only for themselves; guests can be confirmed by anyone
+const canConfirm = (pid) => !pid.startsWith('tg') || pid === myPid;
+
+function doneButton() {
+  if (!canConfirm(actAs)) return '';
+  const done = bill.people[actAs].done;
+  return `<div class="row"><span class="grow muted">${done ? '✓ Отметил всё' : 'Отметили всё, что ели и пили?'}</span>
+    <button class="${done ? '' : 'primary'}" data-act="done">${done ? 'Отменить' : 'Я всё отметил'}</button></div>`;
 }
 
 function itemRow(item) {
@@ -272,7 +295,7 @@ function render() {
     <input id="place" class="place" placeholder="📍 Заведение" maxlength="60" value="${esc(bill.place || '')}">
     ${photosView()}
     <h2>Отмечаю за</h2>
-    <div class="card"><div class="row"><span class="grow">Чьи позиции</span><select data-act="actas">${options(actAs)}</select></div></div>
+    <div class="card"><div class="row"><span class="grow">Чьи позиции</span><select data-act="actas">${options(actAs)}</select></div>${doneButton()}</div>
     <h2>Позиции <span><button class="link" data-act="edit">${editing ? 'Готово' : 'Изменить'}</button></span></h2>
     <div class="card">
       ${bill.items.map(itemRow).join('') || `<div class="row muted">Пока пусто — добавьте позицию${bill.ocr && bill.photos.length ? ' или распознайте фото' : ''}</div>`}
@@ -280,9 +303,11 @@ function render() {
       <button class="primary" data-act="add">+</button></div>
     </div>
     ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем».</div>` : ''}
+    ${progressView()}
     ${mismatch ? `<div class="warn">Итог в чеке ${money(bill.receipt_total)}, а по позициям ${money(c.items_sum)} + обслуживание. Проверьте распознанные цены.</div>` : ''}
     <h2>Итого</h2>
     <div class="card">
+      <div class="row"><span class="grow">Человек в счёте</span><input id="expected" class="price" inputmode="numeric" placeholder="${bill.progress.joined}" value="${bill.expected_people || ''}"></div>
       <div class="row"><span class="grow">Обслуживание, %</span><input id="service" class="price" inputmode="decimal" value="${bill.service_pct}"></div>
       <div class="row"><span class="grow">Кому переводить</span><select data-act="payer">
         <option value="">${esc(bill.admin_name)} (по умолчанию)</option>
@@ -290,14 +315,14 @@ function render() {
       </select></div>
       ${payToView()}
       ${people.map((p) => `<div class="row">
-        <span class="grow ${bill.people[p].paid ? 'paid' : ''}">${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</span>
+        <span class="grow ${bill.people[p].paid ? 'paid' : ''}">${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}${bill.people[p].done ? '' : ' <span class="muted">· отмечает</span>'}</span>
         <b class="num">${money(c.owed[p])}</b>
         ${p === payee() ? '<span class="muted">получатель</span>' : `<input type="checkbox" title="Перевёл" data-act="paid" data-pid="${p}" ${bill.people[p].paid ? 'checked' : ''}>`}
       </div>`).join('')}
       <div class="row"><b class="grow">Всего</b><b class="num">${money(c.total)}</b></div>
     </div>
     <h2>Участники <button class="link" data-act="add-person">+ без Telegram</button></h2>
-    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${p === myPid ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
+    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${tgUser && !p.startsWith('tg') ? `<button class="link" data-act="claim" data-pid="${p}">это я</button>` : ''}${p === myPid ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
     <div class="bar"><button data-act="photo" ${busy ? 'disabled' : ''}>📎 Фото</button><button data-act="share">🔗 Ссылка</button><button class="primary" data-act="copy">📋 Итоги</button></div>`;
 }
 
@@ -319,6 +344,9 @@ document.addEventListener('click', (e) => {
   const id = el.dataset.id, item = bill?.items.find((i) => i.id === id), count = item?.shares[actAs] || 0;
   ({
     join: () => { const name = $('#name').value.trim(); if (!name) return toast('Введите имя'); store.set('name', name); op({ op: 'join', pid: myPid, name }); },
+    be: () => { myPid = actAs = el.dataset.pid; store.set('pid', myPid); render(); },
+    claim: () => op({ op: 'claim', pid: el.dataset.pid }),
+    done: () => op({ op: 'set_done', pid: actAs, done: !bill.people[actAs].done }),
     toggle: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count ? 0 : 1 }),
     inc: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count + 1 }),
     dec: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count - 1 }),
@@ -372,6 +400,7 @@ document.addEventListener('change', (e) => {
   else if (t.dataset.act === 'payer') op({ op: 'set_payer', pid: t.value });
   else if (t.dataset.act === 'paid') op({ op: 'set_paid', pid: t.dataset.pid, paid: t.checked });
   else if (t.id === 'place') op({ op: 'set_place', place: t.value });
+  else if (t.id === 'expected') op({ op: 'set_expected', count: Math.max(0, parseInt(t.value, 10) || 0) });
   else if (t.id === 'service') op({ op: 'set_service', service_pct: Number(t.value.replace(',', '.')) || 0 });
   else if (t.dataset.name || t.dataset.price) {
     const id = t.dataset.name || t.dataset.price;
@@ -415,13 +444,14 @@ async function home() {
   // The list needs a verified Telegram user; in a plain browser only "create" is shown
   const data = tg?.initData ? await api('/api/bills').catch(() => ({ bills: [] })) : { bills: [] };
   $('#app').innerHTML = `<h1>Делим счёт</h1>
-    <div class="card"><div class="row"><input id="title" class="grow" placeholder="Название, например «Пятница»">
-    <button class="primary" id="create">Создать</button></div></div>
+    <div class="card"><div class="row"><input id="title" class="grow" placeholder="Название, например «Пятница»"></div>
+    <div class="row"><span class="grow">Сколько человек</span><input id="expected-new" class="price" inputmode="numeric" placeholder="не знаю"></div>
+    <div class="row"><button class="primary grow" id="create">Создать</button></div></div>
     <p class="muted">Создайте счёт и отправьте ссылку друзьям — каждый отметит, что ел.</p>
     ${billsList(data)}`;
   $('#create').onclick = async () => {
     try {
-      const created = await api('/api/bills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('#title').value }) });
+      const created = await api('/api/bills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('#title').value, expected_people: Math.max(0, parseInt($('#expected-new').value, 10) || 0) }) });
       openBill(created.id);
     } catch (e) { toast(e.message); }
   };

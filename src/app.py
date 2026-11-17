@@ -155,7 +155,7 @@ def load_photo(bill_id: str, photo_id: str) -> tuple[bytes, str]:
     return row[0], row[1]
 
 
-def create_bill(title: str, creator: str | None) -> Bill:
+def create_bill(title: str, creator: str | None, expected_people: int = 0) -> Bill:
     bill: Bill = {
         "id": secrets.token_urlsafe(12),  # unguessable: the link is the access token
         "title": title[:100] or "Счёт",
@@ -165,6 +165,7 @@ def create_bill(title: str, creator: str | None) -> Bill:
         "service_pct": 0,
         "payer": None,
         "receipt_total": 0,
+        "expected_people": expected_people,  # 0: everyone who joined
         "people": {},
         "items": [],
         "photos": [],
@@ -242,11 +243,20 @@ def pay_to(bill: Bill, s: dict[str, Any]) -> dict[str, Any]:
     return {"name": person["name"], "phone": person.get("phone", ""), "banks": person.get("banks", []), "admin": False}
 
 
+def progress(bill: Bill) -> dict[str, int | bool]:
+    """How many people confirmed their picks; totals are final only when all of them did."""
+    expected = bill.get("expected_people") or len(bill["people"])
+    done = sum(1 for person in bill["people"].values() if person.get("done"))
+    return {"done": done, "joined": len(bill["people"]), "expected": expected,
+            "ready": expected > 0 and done >= expected}
+
+
 def view(bill: Bill) -> dict[str, Any]:
     s = settings()
     return {
         **bill,
         "calc": compute(bill),
+        "progress": progress(bill),
         "share_url": share_url(bill["id"]),
         "ocr": s["ocr"],
         "pay_to": pay_to(bill, s),
@@ -355,12 +365,51 @@ def _photo(bill: Bill, photo_id: str) -> dict[str, Any]:
 
 # ---------- operations ----------
 
+def _name_taken(bill: Bill, pid: str, name: str) -> bool:
+    """A browser or guest entry with the name of another such entry is almost always the same person."""
+    if pid.startswith("tg"):
+        return False  # Telegram accounts are distinct people even with equal names
+    return any(other != pid and not other.startswith("tg") and p["name"].casefold() == name.casefold()
+               for other, p in bill["people"].items())
+
+
 def op_join(bill: Bill, body: dict[str, Any]) -> None:
     pid = _str(body, "pid", 64)
     _require_self(pid, body)
+    name = _str(body, "name", 40)
     if pid not in bill["people"] and len(bill["people"]) >= MAX_PEOPLE:
         raise BadRequest("Too many people")
-    bill["people"].setdefault(pid, {"paid": False})["name"] = _str(body, "name", 40)
+    if _name_taken(bill, pid, name):
+        raise BadRequest(f"«{name}» уже есть в счёте. Если это вы, выберите себя в списке участников")
+    bill["people"].setdefault(pid, {"paid": False})["name"] = name
+
+
+def op_claim(bill: Bill, body: dict[str, Any]) -> None:
+    """A Telegram user takes over the guest entry they made before: their picks move to the account."""
+    uid = body.get("_uid")
+    if not isinstance(uid, str):
+        raise BadRequest("Привязать участника можно только в Telegram")
+    pid = _person(bill, body)
+    if pid.startswith("tg"):
+        raise BadRequest("Этот участник уже привязан к Telegram")
+    guest = bill["people"].pop(pid)
+    person = bill["people"].setdefault(uid, {**guest, "paid": False})
+    person["name"] = guest["name"]
+    for item in bill["items"]:
+        if count := item["shares"].pop(pid, 0):
+            item["shares"][uid] = item["shares"].get(uid, 0) + count
+    if bill["payer"] == pid:
+        bill["payer"] = uid
+
+
+def op_set_done(bill: Bill, body: dict[str, Any]) -> None:
+    pid = _person(bill, body)
+    _require_self(pid, body)
+    bill["people"][pid]["done"] = bool(body.get("done"))
+
+
+def op_set_expected(bill: Bill, body: dict[str, Any]) -> None:
+    bill["expected_people"] = _int(body, "count", 0, MAX_PEOPLE)
 
 
 def op_remove_person(bill: Bill, body: dict[str, Any]) -> None:
@@ -732,7 +781,8 @@ class Handler(BaseHTTPRequestHandler):
         match parts:
             case ["api", "bills"]:
                 body = self._json_body()
-                return view(create_bill(str(body.get("title") or ""), body["_uid"]))
+                expected = _int(body, "expected_people", 0, MAX_PEOPLE) if "expected_people" in body else 0
+                return view(create_bill(str(body.get("title") or ""), body["_uid"], expected))
             case ["api", "bills", bill_id]:
                 return view(apply_op(bill_id, self._json_body()))
             case ["api", "bills", bill_id, "photos"]:

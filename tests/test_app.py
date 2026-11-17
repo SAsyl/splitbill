@@ -164,6 +164,39 @@ def check_ocr_access() -> None:
     assert "Дневной лимит" in scan(111)[1]["error"] and "Дневной лимит" in scan(777)[1]["error"]
 
 
+def check_progress_and_identity() -> None:
+    """#5: totals stay preliminary until everyone confirms; one person never appears twice."""
+    _, b = call("/api/bills", {"title": "Ужин", "expected_people": 3})
+    path = f"/api/bills/{b['id']}"
+    assert b["progress"] == {"done": 0, "joined": 0, "expected": 3, "ready": False}
+    call(path, {"op": "join", "pid": "w1", "name": "Аня"})
+    call(path, {"op": "join", "pid": "tg222", "name": "Бек"}, uid=222)
+    status, err = call(path, {"op": "join", "pid": "w2", "name": " аня "})  # same person, new browser
+    assert status == 400 and "уже есть" in err["error"]
+    assert call(path, {"op": "join", "pid": "tg333", "name": "Аня"}, uid=333)[0] == 200  # another account
+    assert call(path, {"op": "set_done", "pid": "tg222", "done": True}, uid=333)[0] == 400  # only Бек himself
+    call(path, {"op": "set_done", "pid": "tg222", "done": True}, uid=222)
+    _, b = call(path, {"op": "set_done", "pid": "w1", "done": True})
+    assert b["progress"] == {"done": 2, "joined": 3, "expected": 3, "ready": False}
+    _, b = call(path, {"op": "set_done", "pid": "tg333", "done": True}, uid=333)
+    assert b["progress"]["ready"] is True
+    _, b = call(path, {"op": "set_expected", "count": 4})
+    assert b["progress"]["ready"] is False and b["progress"]["expected"] == 4
+    _, b = call(path, {"op": "set_expected", "count": 0})  # 0: everyone who joined
+    assert b["progress"]["expected"] == 3 and b["progress"]["ready"] is True
+
+    # A guest entry later opened in Telegram is taken over together with its picks
+    call(path, {"op": "add_item", "name": "Чай", "price": "1000"})
+    item_id = app.load(b["id"])["items"][0]["id"]
+    call(path, {"op": "set_share", "item_id": item_id, "pid": "w1", "count": 2})
+    call(path, {"op": "set_payer", "pid": "w1"})
+    assert call(path, {"op": "claim", "pid": "w1"})[0] == 400  # browser: no account to attach to
+    assert call(path, {"op": "claim", "pid": "tg222"}, uid=444)[0] == 400
+    _, b = call(path, {"op": "claim", "pid": "w1"}, uid=444)
+    assert "w1" not in b["people"] and b["people"]["tg444"]["name"] == "Аня"
+    assert b["items"][0]["shares"] == {"tg444": 2} and b["payer"] == "tg444"
+
+
 def main() -> None:
     global BASE
     check_claude_code_backend()  # before ocr.recognize gets stubbed below
@@ -294,6 +327,7 @@ def main() -> None:
     assert step(False, *down, None) is False and "✅ Перезапустил" in sent_texts[-1] and len(sent_texts) == 3
     assert len(repairs) == 3
 
+    check_progress_and_identity()
     check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")
