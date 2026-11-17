@@ -238,6 +238,25 @@ def check_item_service() -> None:
     assert call(path, {**toggle, "no_service": False}, uid=111)[1]["calc"]["owed"]["tg222"] == 660000  # admin
 
 
+def check_undo() -> None:
+    """#8: an accidental "всем" is undone exactly, bad input is refused."""
+    _, b = call("/api/bills", {"title": "Отмена"})
+    path = f"/api/bills/{b['id']}"
+    for pid in ("w1", "w2", "w3"):
+        call(path, {"op": "join", "pid": pid, "name": pid})
+    _, b = call(path, {"op": "add_item", "name": "Пицца", "price": "3000"})
+    item_id = b["items"][0]["id"]
+    call(path, {"op": "set_share", "item_id": item_id, "pid": "w1", "count": 2})
+    _, b = call(path, {"op": "share_all", "item_id": item_id})
+    assert b["items"][0]["shares"] == {"w1": 1, "w2": 1, "w3": 1}
+    restore = {"op": "restore_shares", "item_id": item_id}
+    assert call(path, {**restore, "shares": {"w9": 1}})[0] == 400
+    assert call(path, {**restore, "shares": {"w1": 0}})[0] == 400
+    assert call(path, {**restore, "shares": [1]})[0] == 400
+    _, b = call(path, {**restore, "shares": {"w1": 2}})
+    assert b["items"][0]["shares"] == {"w1": 2}
+
+
 def main() -> None:
     global BASE
     check_claude_code_backend()  # before ocr.recognize gets stubbed below
@@ -371,6 +390,7 @@ def main() -> None:
     check_progress_and_identity()
     check_portions()
     check_item_service()
+    check_undo()
     check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")

@@ -455,6 +455,18 @@ def op_set_share(bill: Bill, body: dict[str, Any]) -> None:
         item["shares"].pop(pid, None)
 
 
+def op_restore_shares(bill: Bill, body: dict[str, Any]) -> None:
+    """Undo of "всем": puts back who had this item before."""
+    item = _item(bill, body)
+    shares = body.get("shares")
+    if not isinstance(shares, dict):
+        raise BadRequest("'shares' must be an object")
+    for pid, count in shares.items():
+        _person(bill, {"pid": pid})
+        _int({"count": count}, "count", 1, 99)
+    item["shares"] = dict(shares)
+
+
 def op_share_all(bill: Bill, body: dict[str, Any]) -> None:
     item = _item(bill, body)
     everyone = {pid: 1 for pid in bill["people"]}

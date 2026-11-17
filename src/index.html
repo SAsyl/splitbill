@@ -63,7 +63,8 @@
   #zoom { position: fixed; inset: 0; background: rgba(0, 0, 0, .9); display: flex; align-items: center; justify-content: center; z-index: 10; }
   #zoom[hidden] { display: none; }
   #zoom img { max-width: 100%; max-height: 100%; }
-  #toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; display: none; z-index: 9; }
+  #toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; display: none; z-index: 9; align-items: center; gap: 12px; max-width: calc(100% - 32px); }
+  #toast button { background: none; color: var(--accent); padding: 0; font-weight: 600; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -99,9 +100,19 @@ let draft = null; // requisites form being edited: { pid, phone, banks }
 let timer = null; // polling of the open bill
 const when = (ts) => new Date(ts * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-function toast(text, ms = 2500) {
-  const t = $('#toast'); t.textContent = text; t.style.display = 'block';
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', ms);
+let undoAction = null; // what "Отменить" in the toast puts back
+
+function toast(text, ms = 2500, undo = null) {
+  const t = $('#toast');
+  undoAction = undo;
+  t.innerHTML = `<span>${esc(text)}</span>${undo ? '<button data-act="undo">Отменить</button>' : ''}`;
+  t.style.display = 'flex';
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.style.display = 'none'; undoAction = null; }, ms);
+}
+
+// Every pick change can be taken back in one tap: an accidental tap is the common case
+async function pick(body, undo, text) {
+  if (await op(body)) toast(text, 8000, undo);
 }
 
 async function api(path, opts = {}) {
@@ -314,7 +325,7 @@ function render() {
       <div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-qty" class="qty" inputmode="numeric" placeholder="×1" title="Порций"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
       <button class="primary" data-act="add">+</button></div>
     </div>
-    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем». Не отмеченные порции никому не добавляются.</div>` : ''}
+    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем». Неотмеченные порции никому не добавляются.</div>` : ''}
     ${progressView()}
     ${mismatch ? `<div class="warn">Итог в чеке ${money(bill.receipt_total)}, а по позициям ${money(c.items_sum)} + обслуживание. Проверьте распознанные цены.</div>` : ''}
     <h2>Итого</h2>
@@ -348,6 +359,13 @@ async function copy(text, done) {
   toast(done);
 }
 
+function setCount(item, next) {
+  const who = actAs === myPid ? '' : ` за ${nameOf(actAs)}`;
+  const text = next ? `Отмечено${who}: ${item.name}${next > 1 ? ' ×' + next : ''}` : `Снято${who}: ${item.name}`;
+  pick({ op: 'set_share', item_id: item.id, pid: actAs, count: next },
+    { op: 'set_share', item_id: item.id, pid: actAs, count: item.shares[actAs] || 0 }, text);
+}
+
 // One delegated handler for all buttons
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
@@ -359,10 +377,12 @@ document.addEventListener('click', (e) => {
     be: () => { myPid = actAs = el.dataset.pid; store.set('pid', myPid); render(); },
     claim: () => op({ op: 'claim', pid: el.dataset.pid }),
     done: () => op({ op: 'set_done', pid: actAs, done: !bill.people[actAs].done }),
-    toggle: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count ? 0 : 1 }),
-    inc: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count + 1 }),
-    dec: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count - 1 }),
-    all: () => op({ op: 'share_all', item_id: id }),
+    toggle: () => setCount(item, count ? 0 : 1),
+    inc: () => setCount(item, count + 1),
+    dec: () => setCount(item, count - 1),
+    all: () => pick({ op: 'share_all', item_id: id },
+      { op: 'restore_shares', item_id: id, shares: { ...item.shares } }, `«${item.name}»: поделено на всех`),
+    undo: () => { const body = undoAction; $('#toast').style.display = 'none'; undoAction = null; if (body) op(body); },
     del: () => op({ op: 'delete_item', item_id: id }),
     svc: () => op({ op: 'set_item_service', item_id: id, no_service: !item.no_service }),
     edit: () => { editing = !editing; render(); },
