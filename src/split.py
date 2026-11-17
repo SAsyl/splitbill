@@ -27,15 +27,23 @@ def item_split(item: dict[str, Any], people: dict[str, Any]) -> tuple[dict[str, 
     return costs, Fraction(item["price"] * (portions - claimed), portions)
 
 
+def service_factor(bill: Bill, item: dict[str, Any]) -> Fraction:
+    """Price multiplier of one item: set menus priced with the service included are exempt."""
+    if item.get("no_service"):
+        return Fraction(1)
+    return 1 + Fraction(Decimal(str(bill["service_pct"]))) / 100
+
+
 def exact_shares(bill: Bill) -> tuple[dict[str, Fraction], Fraction]:
-    """Per-person exact subtotals (before service) and the unassigned sum."""
+    """Per-person exact amounts (service included) and the unassigned sum (before service)."""
     shares: dict[str, Fraction] = {pid: Fraction(0) for pid in bill["people"]}
     unassigned = Fraction(0)
     for item in bill["items"]:
         costs, rest = item_split(item, shares)
         unassigned += rest
+        factor = service_factor(bill, item)
         for pid, cost in costs.items():
-            shares[pid] += cost
+            shares[pid] += cost * factor
     return shares, unassigned
 
 
@@ -54,12 +62,13 @@ def round_preserving_sum(exact: dict[str, Fraction], unit: int) -> dict[str, int
 def compute(bill: Bill, unit: int = ROUND_UNIT) -> dict[str, Any]:
     """Final amounts per person in minor units, plus totals for the UI."""
     shares, unassigned = exact_shares(bill)
-    multiplier = 1 + Fraction(Decimal(str(bill["service_pct"]))) / 100
-    owed = round_preserving_sum({pid: v * multiplier for pid, v in shares.items()}, unit)
+    owed = round_preserving_sum(shares, unit)
     items_sum = sum(item["price"] for item in bill["items"])
+    with_service = sum((item["price"] * service_factor(bill, item) for item in bill["items"]), Fraction(0))
     return {
         "owed": owed,
         "items_sum": items_sum,
+        "with_service": round(with_service),
         "unassigned": round(unassigned),
         "total": sum(owed.values()),
     }
@@ -102,6 +111,14 @@ def _demo() -> None:
     sets["items"][0]["shares"]["a"] = 3  # 5 claimed of 4: split by count, nothing unassigned
     r = compute(sets)
     assert r["owed"] == {"a": 240_00, "b": 80_00, "c": 80_00} and r["unassigned"] == 0, r
+    # Service-inclusive set: 10% only on the tea
+    exempt: Bill = {
+        "people": {"a": {}},
+        "service_pct": 10,
+        "items": [{"price": 500_00, "no_service": True, "shares": {"a": 1}}, {"price": 100_00, "shares": {"a": 1}}],
+    }
+    r = compute(exempt)
+    assert r["owed"] == {"a": 610_00} and r["with_service"] == 610_00, r
     print("split.py: ok")
 
 

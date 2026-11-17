@@ -206,6 +206,8 @@ function doneButton() {
 }
 
 const qtyOf = (item) => item.qty || 1;
+// Mirrors the server rule: Telegram bills are configured by their creator or the admin
+const canConfigure = () => !bill.creator || bill.creator === myPid || myPid === bill.admin_pid;
 const claimedOf = (item) => Object.values(item.shares).reduce((a, b) => a + b, 0);
 
 function itemRow(item) {
@@ -216,13 +218,14 @@ function itemRow(item) {
     return `<div class="row"><input class="grow" data-name="${item.id}" value="${esc(item.name)}">
       <input class="qty" inputmode="numeric" data-qty="${item.id}" value="${qty}" title="Порций">
       <input class="price" inputmode="decimal" data-price="${item.id}" value="${item.price / 100}">
+      ${canConfigure() ? `<button data-act="svc" data-id="${item.id}" title="Начислять обслуживание">${item.no_service ? 'без %' : '+%'}</button>` : ''}
       <button data-act="del" data-id="${item.id}">✕</button></div>`;
   }
   const chips = Object.entries(item.shares).map(([pid, c]) =>
     `<span class="chip ${pid === actAs ? 'me' : ''}">${esc(nameOf(pid))}${c > 1 ? ' ×' + c : ''}</span>`).join('');
   const stepper = count ? `<div class="stepper"><button data-act="dec" data-id="${item.id}">−</button><b>${count}</b><button data-act="inc" data-id="${item.id}">+</button></div>` : '';
   return `<div class="row item ${count ? 'mine' : ''} ${free ? 'free' : ''}" data-act="toggle" data-id="${item.id}">
-    <div class="grow"><div>${esc(item.name)}${qty > 1 ? ` <span class="muted">×${qty}</span>` : ''}</div>
+    <div class="grow"><div>${esc(item.name)}${qty > 1 ? ` <span class="muted">×${qty}</span>` : ''}${item.no_service && bill.service_pct ? ' <span class="muted">· без обслуживания</span>' : ''}</div>
       ${qty > 1 ? `<div class="muted">отмечено ${claimed} из ${qty} · по ${money(item.price / qty)}</div>` : ''}
       <div class="chips">${chips || '<span class="muted">никто не отметил</span>'}</div></div>
     ${stepper}<span class="num">${money(item.price)}</span>
@@ -295,7 +298,8 @@ function render() {
   const people = Object.keys(bill.people);
   const options = (sel, empty) => (empty ? `<option value="">${empty}</option>` : '') +
     people.map((p) => `<option value="${p}" ${p === sel ? 'selected' : ''}>${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</option>`).join('');
-  const mismatch = bill.receipt_total && Math.abs(bill.receipt_total - c.items_sum * (1 + bill.service_pct / 100)) > 100;
+  const mismatch = bill.receipt_total && Math.abs(bill.receipt_total - c.with_service) > 100;
+  const exempt = bill.items.filter((i) => i.no_service).length;
 
   $('#app').innerHTML = `
     <h1>${esc(bill.title)}</h1>
@@ -316,7 +320,7 @@ function render() {
     <h2>Итого</h2>
     <div class="card">
       <div class="row"><span class="grow">Человек в счёте</span><input id="expected" class="price" inputmode="numeric" placeholder="${bill.progress.joined}" value="${bill.expected_people || ''}"></div>
-      <div class="row"><span class="grow">Обслуживание, %</span><input id="service" class="price" inputmode="decimal" value="${bill.service_pct}"></div>
+      <div class="row"><span class="grow">Обслуживание, %${exempt ? `<div class="muted">кроме позиций без обслуживания: ${exempt}</div>` : canConfigure() && bill.items.length ? '<div class="muted">исключить позицию: «Изменить» → «+%»</div>' : ''}</span><input id="service" class="price" inputmode="decimal" value="${bill.service_pct}"></div>
       <div class="row"><span class="grow">Кому переводить</span><select data-act="payer">
         <option value="">${esc(bill.admin_name)} (по умолчанию)</option>
         ${people.filter((p) => p !== bill.admin_pid).map((p) => `<option value="${p}" ${p === bill.payer ? 'selected' : ''}>${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</option>`).join('')}
@@ -360,6 +364,7 @@ document.addEventListener('click', (e) => {
     dec: () => op({ op: 'set_share', item_id: id, pid: actAs, count: count - 1 }),
     all: () => op({ op: 'share_all', item_id: id }),
     del: () => op({ op: 'delete_item', item_id: id }),
+    svc: () => op({ op: 'set_item_service', item_id: id, no_service: !item.no_service }),
     edit: () => { editing = !editing; render(); },
     add: () => op({ op: 'add_item', name: $('#new-name').value, price: $('#new-price').value, qty: parseInt($('#new-qty').value, 10) || 1 }),
     rm: () => op({ op: 'remove_person', pid: el.dataset.pid }),

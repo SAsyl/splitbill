@@ -219,6 +219,25 @@ def check_portions() -> None:
     assert b["calc"]["unassigned"] == 0 and b["calc"]["total"] == 800000
 
 
+def check_item_service() -> None:
+    """#7: the creator exempts service-inclusive sets from the service fee; nobody else can."""
+    _, b = call("/api/bills", {"title": "Аукцион"}, uid=222)
+    path = f"/api/bills/{b['id']}"
+    call(path, {"op": "join", "pid": "tg222", "name": "Бек"}, uid=222)
+    call(path, {"op": "set_service", "service_pct": 10})
+    for name, price in (("Аукционный сет", "5000"), ("Чай", "1000")):
+        _, b = call(path, {"op": "add_item", "name": name, "price": price})
+    set_id = b["items"][0]["id"]
+    for item in b["items"]:
+        _, b = call(path, {"op": "set_share", "item_id": item["id"], "pid": "tg222", "count": 1})
+    assert b["calc"]["owed"]["tg222"] == 660000
+    toggle = {"op": "set_item_service", "item_id": set_id, "no_service": True}
+    assert call(path, toggle)[0] == 400 and call(path, toggle, uid=333)[0] == 400  # not the creator
+    _, b = call(path, toggle, uid=222)
+    assert b["calc"]["owed"]["tg222"] == 610000 and b["calc"]["with_service"] == 610000
+    assert call(path, {**toggle, "no_service": False}, uid=111)[1]["calc"]["owed"]["tg222"] == 660000  # admin
+
+
 def main() -> None:
     global BASE
     check_claude_code_backend()  # before ocr.recognize gets stubbed below
@@ -351,6 +370,7 @@ def main() -> None:
 
     check_progress_and_identity()
     check_portions()
+    check_item_service()
     check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")

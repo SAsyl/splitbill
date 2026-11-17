@@ -461,6 +461,22 @@ def op_share_all(bill: Bill, body: dict[str, Any]) -> None:
     item["shares"] = {} if item["shares"] == everyone else everyone
 
 
+def _require_creator(bill: Bill, body: dict[str, Any]) -> None:
+    """Bills made in Telegram are configured by their creator (or the admin); browser bills by anyone."""
+    creator = bill["creator"]
+    if creator is not None and body.get("_uid") not in (creator, ADMIN_PID):
+        raise BadRequest("Это может менять только создатель счёта")
+
+
+def op_set_item_service(bill: Bill, body: dict[str, Any]) -> None:
+    _require_creator(bill, body)
+    item = _item(bill, body)
+    if body.get("no_service"):
+        item["no_service"] = True
+    else:
+        item.pop("no_service", None)
+
+
 def op_set_service(bill: Bill, body: dict[str, Any]) -> None:
     value = body.get("service_pct")
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not -100 <= value <= 100:
