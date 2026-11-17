@@ -35,6 +35,7 @@ MAGIC: list[tuple[bytes, int, str]] = [  # (signature, offset, media type)
 MAX_ITEMS = 200
 MAX_PRICE = 100_000_000  # per line / total, in major units
 MAX_QTY = 1000
+MAX_PORTIONS = 99  # same cap as one person's share count
 
 BACKEND = os.environ.get("OCR_BACKEND") or ("api" if os.environ.get("ANTHROPIC_API_KEY") else "claude-code")
 if BACKEND not in {"api", "claude-code"}:
@@ -113,7 +114,8 @@ class OcrError(Exception):
 
 class Item(TypedDict):
     name: str
-    price: int  # minor units
+    price: int  # minor units, line total
+    qty: int  # portions people can claim one by one; 1 for weighed or single items
 
 
 class Receipt(TypedDict):
@@ -137,10 +139,17 @@ def _clean(text: str, limit: int) -> str:
     return "".join(ch for ch in text if unicodedata.category(ch)[0] != "C").strip()[:limit]
 
 
+def _portions(raw: dict[str, Any]) -> int:
+    """Whole quantities become portions; 0.5 kg and the like stay one position."""
+    qty = raw["qty"]
+    return int(qty) if qty == int(qty) and 1 <= qty <= MAX_PORTIONS else 1
+
+
 def _item_name(raw: dict[str, Any]) -> str:
     name = _clean(raw["name"], 80)
     note = _clean(raw["note"], 40)
-    qty = f" ×{raw['qty']:g}" if raw["qty"] != 1 and 0 < raw["qty"] <= MAX_QTY else ""
+    whole = _portions(raw) > 1 or raw["qty"] == 1
+    qty = f" ×{raw['qty']:g}" if not whole and 0 < raw["qty"] <= MAX_QTY else ""
     return f"{name} ({note}){qty}" if note else f"{name}{qty}"
 
 
@@ -246,7 +255,7 @@ def recognize(images: list[Image]) -> Receipt:
     if not raw["is_receipt"]:
         raise OcrError("Это не похоже на чек")
     items: list[Item] = [
-        {"name": _item_name(i), "price": to_minor(i["price"])}
+        {"name": _item_name(i), "price": to_minor(i["price"]), "qty": _portions(i)}
         for i in raw["items"][:MAX_ITEMS]
         if 0 <= i["price"] <= MAX_PRICE and _clean(i["name"], 80)
     ]

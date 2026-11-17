@@ -325,6 +325,10 @@ def _int(body: dict[str, Any], key: str, lo: int, hi: int) -> int:
     return value
 
 
+def _qty(body: dict[str, Any], default: int = 1) -> int:
+    return _int(body, "qty", 1, ocr.MAX_PORTIONS) if "qty" in body else default
+
+
 def normalize_phone(raw: str) -> str:
     digits = re.sub(r"\D", "", raw)
     if not 10 <= len(digits) <= 15:
@@ -424,7 +428,8 @@ def op_remove_person(bill: Bill, body: dict[str, Any]) -> None:
 def op_add_item(bill: Bill, body: dict[str, Any]) -> None:
     if len(bill["items"]) >= MAX_ITEMS:
         raise BadRequest("Too many items")
-    item = {"id": secrets.token_hex(4), "name": _str(body, "name"), "price": _money(body, "price"), "shares": {}}
+    item = {"id": secrets.token_hex(4), "name": _str(body, "name"), "price": _money(body, "price"),
+            "qty": _qty(body), "shares": {}}
     bill["items"].append(item)
 
 
@@ -432,6 +437,7 @@ def op_update_item(bill: Bill, body: dict[str, Any]) -> None:
     item = _item(bill, body)
     item["name"] = _str(body, "name")
     item["price"] = _money(body, "price")
+    item["qty"] = _qty(body, item.get("qty", 1))
 
 
 def op_delete_item(bill: Bill, body: dict[str, Any]) -> None:

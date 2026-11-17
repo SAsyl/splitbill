@@ -44,6 +44,7 @@
   input, select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--bg2); background: var(--bg); color: var(--fg); min-width: 0; }
   option { background: var(--bg); color: var(--fg); }
   input.price { width: 100px; text-align: right; }
+  input.qty { width: 52px; text-align: right; }
   .stepper { display: flex; align-items: center; gap: 6px; }
   .stepper button { width: 32px; padding: 4px 0; }
   .warn { background: color-mix(in srgb, var(--danger) 15%, var(--bg)); color: var(--fg); padding: 10px 12px; border-radius: 12px; margin-top: 12px; font-size: 14px; }
@@ -204,11 +205,16 @@ function doneButton() {
     <button class="${done ? '' : 'primary'}" data-act="done">${done ? 'Отменить' : 'Я всё отметил'}</button></div>`;
 }
 
+const qtyOf = (item) => item.qty || 1;
+const claimedOf = (item) => Object.values(item.shares).reduce((a, b) => a + b, 0);
+
 function itemRow(item) {
   const count = item.shares[actAs] || 0;
-  const free = !Object.keys(item.shares).length;
+  const qty = qtyOf(item), claimed = claimedOf(item);
+  const free = claimed < qty;
   if (editing) {
     return `<div class="row"><input class="grow" data-name="${item.id}" value="${esc(item.name)}">
+      <input class="qty" inputmode="numeric" data-qty="${item.id}" value="${qty}" title="Порций">
       <input class="price" inputmode="decimal" data-price="${item.id}" value="${item.price / 100}">
       <button data-act="del" data-id="${item.id}">✕</button></div>`;
   }
@@ -216,7 +222,9 @@ function itemRow(item) {
     `<span class="chip ${pid === actAs ? 'me' : ''}">${esc(nameOf(pid))}${c > 1 ? ' ×' + c : ''}</span>`).join('');
   const stepper = count ? `<div class="stepper"><button data-act="dec" data-id="${item.id}">−</button><b>${count}</b><button data-act="inc" data-id="${item.id}">+</button></div>` : '';
   return `<div class="row item ${count ? 'mine' : ''} ${free ? 'free' : ''}" data-act="toggle" data-id="${item.id}">
-    <div class="grow"><div>${esc(item.name)}</div><div class="chips">${chips || '<span class="muted">никто не отметил</span>'}</div></div>
+    <div class="grow"><div>${esc(item.name)}${qty > 1 ? ` <span class="muted">×${qty}</span>` : ''}</div>
+      ${qty > 1 ? `<div class="muted">отмечено ${claimed} из ${qty} · по ${money(item.price / qty)}</div>` : ''}
+      <div class="chips">${chips || '<span class="muted">никто не отметил</span>'}</div></div>
     ${stepper}<span class="num">${money(item.price)}</span>
     <button class="link" data-act="all" data-id="${item.id}">всем</button></div>`;
 }
@@ -299,10 +307,10 @@ function render() {
     <h2>Позиции <span><button class="link" data-act="edit">${editing ? 'Готово' : 'Изменить'}</button></span></h2>
     <div class="card">
       ${bill.items.map(itemRow).join('') || `<div class="row muted">Пока пусто — добавьте позицию${bill.ocr && bill.photos.length ? ' или распознайте фото' : ''}</div>`}
-      <div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
+      <div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-qty" class="qty" inputmode="numeric" placeholder="×1" title="Порций"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
       <button class="primary" data-act="add">+</button></div>
     </div>
-    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем».</div>` : ''}
+    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем». Не отмеченные порции никому не добавляются.</div>` : ''}
     ${progressView()}
     ${mismatch ? `<div class="warn">Итог в чеке ${money(bill.receipt_total)}, а по позициям ${money(c.items_sum)} + обслуживание. Проверьте распознанные цены.</div>` : ''}
     <h2>Итого</h2>
@@ -353,7 +361,7 @@ document.addEventListener('click', (e) => {
     all: () => op({ op: 'share_all', item_id: id }),
     del: () => op({ op: 'delete_item', item_id: id }),
     edit: () => { editing = !editing; render(); },
-    add: () => op({ op: 'add_item', name: $('#new-name').value, price: $('#new-price').value }),
+    add: () => op({ op: 'add_item', name: $('#new-name').value, price: $('#new-price').value, qty: parseInt($('#new-qty').value, 10) || 1 }),
     rm: () => op({ op: 'remove_person', pid: el.dataset.pid }),
     'add-person': () => {
       const row = document.createElement('div'); row.className = 'row';
@@ -402,9 +410,10 @@ document.addEventListener('change', (e) => {
   else if (t.id === 'place') op({ op: 'set_place', place: t.value });
   else if (t.id === 'expected') op({ op: 'set_expected', count: Math.max(0, parseInt(t.value, 10) || 0) });
   else if (t.id === 'service') op({ op: 'set_service', service_pct: Number(t.value.replace(',', '.')) || 0 });
-  else if (t.dataset.name || t.dataset.price) {
-    const id = t.dataset.name || t.dataset.price;
-    op({ op: 'update_item', item_id: id, name: $(`[data-name="${id}"]`).value, price: $(`[data-price="${id}"]`).value });
+  else if (t.dataset.name || t.dataset.price || t.dataset.qty) {
+    const id = t.dataset.name || t.dataset.price || t.dataset.qty;
+    op({ op: 'update_item', item_id: id, name: $(`[data-name="${id}"]`).value, price: $(`[data-price="${id}"]`).value,
+      qty: parseInt($(`[data-qty="${id}"]`).value, 10) || 1 });
   }
   else if (t.id === 'file' && t.files.length) { uploadPhotos([...t.files]); t.value = ''; }
 });

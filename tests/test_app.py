@@ -60,6 +60,8 @@ def check_claude_code_backend() -> None:
     tmp = tempfile.mkdtemp()
     answer = {"is_receipt": True, "place": "Нават\u202e", "service_pct": 10, "service_amount": 0, "total": 3509,
               "items": [{"name": "Плов", "note": "", "qty": 1, "price": 3190},
+                        {"name": "Сет 3", "note": "", "qty": 4, "price": 20000},  # 4 portions
+                        {"name": "Шашлык", "note": "", "qty": 0.5, "price": 4000},  # weighed: one position
                         {"name": "Взлом", "note": "", "qty": 1, "price": 10**9}]}  # out of bounds: dropped
     fake = os.path.join(tmp, "claude")
     with open(fake, "w") as f:
@@ -72,7 +74,9 @@ def check_claude_code_backend() -> None:
     jpeg = (b"\xff\xd8\xff img", "image/jpeg")
     try:
         r = ocr.recognize([jpeg])
-        assert r["items"] == [{"name": "Плов", "price": 319000}] and r["place"] == "Нават" and r["total"] == 350900
+        assert r["items"] == [{"name": "Плов", "price": 319000, "qty": 1}, {"name": "Сет 3", "price": 2000000, "qty": 4},
+                              {"name": "Шашлык ×0.5", "price": 400000, "qty": 1}], r["items"]
+        assert r["place"] == "Нават" and r["total"] == 350900
         try:  # a script labelled as an image never reaches the model
             ocr.recognize([(b"#!/bin/sh", "image/jpeg")])
             raise AssertionError("fake image accepted")
@@ -195,6 +199,24 @@ def check_progress_and_identity() -> None:
     _, b = call(path, {"op": "claim", "pid": "w1"}, uid=444)
     assert "w1" not in b["people"] and b["people"]["tg444"]["name"] == "Аня"
     assert b["items"][0]["shares"] == {"tg444": 2} and b["payer"] == "tg444"
+
+
+def check_portions() -> None:
+    """#6: a "Set x4" taken by 3 people leaves one portion unassigned instead of raising their share."""
+    _, b = call("/api/bills", {"title": "Сеты"})
+    path = f"/api/bills/{b['id']}"
+    for pid, name in (("w1", "А"), ("w2", "Б"), ("w3", "В")):
+        call(path, {"op": "join", "pid": pid, "name": name})
+    assert call(path, {"op": "add_item", "name": "Сет 3", "price": "8000", "qty": 0})[0] == 400
+    _, b = call(path, {"op": "add_item", "name": "Сет 3", "price": "8000", "qty": 4})
+    item_id = b["items"][0]["id"]
+    for pid in ("w1", "w2", "w3"):
+        _, b = call(path, {"op": "set_share", "item_id": item_id, "pid": pid, "count": 1})
+    assert b["calc"]["owed"] == {"w1": 200000, "w2": 200000, "w3": 200000} and b["calc"]["unassigned"] == 200000
+    _, b = call(path, {"op": "update_item", "item_id": item_id, "name": "Сет 3", "price": "8000"})
+    assert b["items"][0]["qty"] == 4  # editing name/price keeps the portions
+    _, b = call(path, {"op": "update_item", "item_id": item_id, "name": "Сет 3", "price": "8000", "qty": 3})
+    assert b["calc"]["unassigned"] == 0 and b["calc"]["total"] == 800000
 
 
 def main() -> None:
@@ -328,6 +350,7 @@ def main() -> None:
     assert len(repairs) == 3
 
     check_progress_and_identity()
+    check_portions()
     check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")

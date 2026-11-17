@@ -12,18 +12,30 @@ Bill = dict[str, Any]
 ROUND_UNIT = 100  # minor units per rounding step: 100 = whole tenge/rubles
 
 
-def exact_shares(bill: Bill) -> tuple[dict[str, Fraction], int]:
+def item_split(item: dict[str, Any], people: dict[str, Any]) -> tuple[dict[str, Fraction], Fraction]:
+    """One item: exact cost per person and the unclaimed rest.
+
+    An item of N portions costs price/N per portion: unclaimed portions stay unclaimed instead of
+    making the others pay for them. Claiming more portions than printed splits the price by count.
+    """
+    counts = {pid: c for pid, c in item["shares"].items() if c > 0 and pid in people}
+    claimed = sum(counts.values())
+    if claimed == 0:
+        return {}, Fraction(item["price"])
+    portions = max(item.get("qty", 1), claimed)
+    costs = {pid: Fraction(item["price"] * count, portions) for pid, count in counts.items()}
+    return costs, Fraction(item["price"] * (portions - claimed), portions)
+
+
+def exact_shares(bill: Bill) -> tuple[dict[str, Fraction], Fraction]:
     """Per-person exact subtotals (before service) and the unassigned sum."""
     shares: dict[str, Fraction] = {pid: Fraction(0) for pid in bill["people"]}
-    unassigned = 0
+    unassigned = Fraction(0)
     for item in bill["items"]:
-        counts = {pid: c for pid, c in item["shares"].items() if c > 0 and pid in shares}
-        total_count = sum(counts.values())
-        if total_count == 0:
-            unassigned += item["price"]
-            continue
-        for pid, count in counts.items():
-            shares[pid] += Fraction(item["price"] * count, total_count)
+        costs, rest = item_split(item, shares)
+        unassigned += rest
+        for pid, cost in costs.items():
+            shares[pid] += cost
     return shares, unassigned
 
 
@@ -48,7 +60,7 @@ def compute(bill: Bill, unit: int = ROUND_UNIT) -> dict[str, Any]:
     return {
         "owed": owed,
         "items_sum": items_sum,
-        "unassigned": unassigned,
+        "unassigned": round(unassigned),
         "total": sum(owed.values()),
     }
 
@@ -79,6 +91,17 @@ def _demo() -> None:
     r = compute(ten)
     assert r["total"] == 1126_00, r["total"]  # 1001 * 1.125 = 1126.125
     assert sorted(set(r["owed"].values())) == [112_00, 113_00]
+    # "Set x4": 3 of 4 portions claimed, the 4th is not spread over the three
+    sets: Bill = {
+        "people": {p: {} for p in "abc"},
+        "service_pct": 0,
+        "items": [{"price": 400_00, "qty": 4, "shares": {"a": 1, "b": 1, "c": 1}}],
+    }
+    r = compute(sets)
+    assert r["owed"] == {"a": 100_00, "b": 100_00, "c": 100_00} and r["unassigned"] == 100_00, r
+    sets["items"][0]["shares"]["a"] = 3  # 5 claimed of 4: split by count, nothing unassigned
+    r = compute(sets)
+    assert r["owed"] == {"a": 240_00, "b": 80_00, "c": 80_00} and r["unassigned"] == 0, r
     print("split.py: ok")
 
 
