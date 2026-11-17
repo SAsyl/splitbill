@@ -256,6 +256,26 @@ def check_receipt_owner() -> None:
     assert b["photos"] == []
 
 
+def check_delete_bill() -> None:
+    """#10: the creator or the admin deletes a bill with its photos; nobody else can."""
+    _, b = call("/api/bills", {"title": "Тестовый"}, uid=555)
+    path = f"/api/bills/{b['id']}"
+    call(path, {"op": "join", "pid": "tg556", "name": "Гость"}, uid=556)
+    call(path + "/photos", raw=b"\xff\xd8\xff del", mime="image/jpeg", uid=555)
+    mine = {x["id"]: x["can_delete"] for x in call("/api/bills", uid=555)[1]["bills"]}
+    joined = {x["id"]: x["can_delete"] for x in call("/api/bills", uid=556)[1]["bills"]}
+    assert mine[b["id"]] is True and joined[b["id"]] is False
+    assert call(path + "/delete", raw=b"")[0] == 400  # browser: unknown person
+    assert "только его создатель" in call(path + "/delete", raw=b"", uid=556)[1]["error"]
+    status, listed = call(path + "/delete", raw=b"", uid=555)
+    assert status == 200 and b["id"] not in [x["id"] for x in listed["bills"]]
+    assert call(path)[0] == 404 and call(path + "/delete", raw=b"", uid=555)[0] == 404
+    with app._db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM photos WHERE bill_id = ?", (b["id"],)).fetchone()[0] == 0
+    _, other = call("/api/bills", {"title": "Чужой"}, uid=557)
+    assert call(f"/api/bills/{other['id']}/delete", raw=b"", uid=111)[0] == 200  # admin
+
+
 def check_undo() -> None:
     """#8: an accidental "всем" is undone exactly, bad input is refused."""
     _, b = call("/api/bills", {"title": "Отмена"})
@@ -410,6 +430,7 @@ def main() -> None:
     check_item_service()
     check_undo()
     check_receipt_owner()
+    check_delete_bill()
     check_ocr_access()
     server.shutdown()
     print("test_app.py: ok")

@@ -40,6 +40,7 @@
   .chip.me { background: var(--accent); color: var(--accent-fg); }
   button { font: inherit; border: 0; border-radius: 8px; padding: 6px 10px; background: var(--bg2); color: var(--fg); cursor: pointer; }
   button.primary { background: var(--accent); color: var(--accent-fg); }
+  button.danger { background: var(--danger); color: #fff; font-size: 13px; padding: 4px 8px; }
   button.link { background: none; color: var(--accent); padding: 0; font-size: 13px; text-transform: none; }
   input, select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--bg2); background: var(--bg); color: var(--fg); min-width: 0; }
   option { background: var(--bg); color: var(--fg); }
@@ -396,6 +397,7 @@ document.addEventListener('click', (e) => {
     },
     guest: () => { const name = $('#guest').value.trim(); if (name) op({ op: 'join', pid: 'g' + crypto.randomUUID().slice(0, 12), name }); },
     open: () => openBill(el.dataset.id, true),
+    'del-bill': () => deleteBill(id),
     'join-tg': () => op({ op: 'join', pid: myPid, name: tgName }),
     photo: () => $('#file').click(),
     ocr: () => recognize(),
@@ -464,12 +466,29 @@ async function openBill(id, fromList = false) {
   if (tg?.initData) tg.BackButton.show();
 }
 
-function billsList(data) {
-  if (!data.bills.length) return '';
-  return `<h2>Мои счета <span class="muted">хранятся ${data.ttl_days} дней</span></h2><div class="card">${data.bills.map((b) => `
+let bills = { bills: [] }; // home screen list
+let deleting = null; // bill id waiting for the second tap: one tap never deletes
+
+function deleteButton(b) {
+  if (!b.can_delete) return '';
+  return deleting === b.id
+    ? `<button class="danger" data-act="del-bill" data-id="${b.id}">Точно удалить?</button>`
+    : `<button class="link" data-act="del-bill" data-id="${b.id}">удалить</button>`;
+}
+
+function billsList() {
+  if (!bills.bills.length) return '';
+  return `<h2>Мои счета <span class="muted">хранятся ${bills.ttl_days} дней</span></h2><div class="card">${bills.bills.map((b) => `
     <div class="row bill-link" data-act="open" data-id="${b.id}"><div class="grow"><b>${esc(b.title)}</b>
       <div class="muted">${[when(b.created_at), b.place && '📍 ' + esc(b.place), `👥 ${b.people}`].filter(Boolean).join(' · ')}</div></div>
-      <span class="muted">›</span></div>`).join('')}</div>`;
+      ${deleteButton(b)}<span class="muted">›</span></div>`).join('')}</div>`;
+}
+
+async function deleteBill(id) {
+  if (deleting !== id) { deleting = id; $('#bills').innerHTML = billsList(); return; }
+  try { bills = await api(`/api/bills/${id}/delete`, { method: 'POST' }); toast('Счёт удалён'); }
+  catch (e) { toast(e.message); }
+  deleting = null; $('#bills').innerHTML = billsList();
 }
 
 async function home() {
@@ -477,13 +496,14 @@ async function home() {
   history.replaceState(null, '', '/');
   if (tg?.initData) tg.BackButton.hide();
   // The list needs a verified Telegram user; in a plain browser only "create" is shown
-  const data = tg?.initData ? await api('/api/bills').catch(() => ({ bills: [] })) : { bills: [] };
+  bills = tg?.initData ? await api('/api/bills').catch(() => ({ bills: [] })) : { bills: [] };
+  deleting = null;
   $('#app').innerHTML = `<h1>Делим счёт</h1>
     <div class="card"><div class="row"><input id="title" class="grow" placeholder="Название, например «Пятница»"></div>
     <div class="row"><span class="grow">Сколько человек</span><input id="expected-new" class="price" inputmode="numeric" placeholder="не знаю"></div>
     <div class="row"><button class="primary grow" id="create">Создать</button></div></div>
     <p class="muted">Создайте счёт и отправьте ссылку друзьям — каждый отметит, что ел.</p>
-    ${billsList(data)}`;
+    <div id="bills">${billsList()}</div>`;
   $('#create').onclick = async () => {
     try {
       const created = await api('/api/bills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('#title').value, expected_people: Math.max(0, parseInt($('#expected-new').value, 10) || 0) }) });

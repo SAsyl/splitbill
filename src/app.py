@@ -184,11 +184,17 @@ def apply_receipt(bill: Bill, receipt: ocr.Receipt) -> None:
     bill["place"] = bill["place"] or receipt["place"]
 
 
-def summary(bill: Bill) -> dict[str, Any]:
-    """One line of the bills list: when, where, how many people."""
+def can_delete(bill: Bill, pid: str) -> bool:
+    """Only the creator or the admin; a bill without a known creator only by the admin."""
+    return pid == ADMIN_PID or (bill["creator"] is not None and bill["creator"] == pid)
+
+
+def summary(bill: Bill, pid: str) -> dict[str, Any]:
+    """One line of the bills list: when, where, how many people, and whether this person may delete it."""
     return {
         "id": bill["id"], "title": bill["title"], "place": bill["place"],
         "created_at": bill["created_at"], "people": len(bill["people"]), "url": share_url(bill["id"]),
+        "can_delete": can_delete(bill, pid),
     }
 
 
@@ -199,7 +205,23 @@ def list_bills(pid: str) -> list[dict[str, Any]]:
     # ponytail: full scan in Python; the table stays small because of BILL_TTL_DAYS
     bills = [json.loads(data) for (data,) in rows]
     mine = [b for b in bills if pid == ADMIN_PID or b["creator"] == pid or pid in b["people"]]
-    return [summary(b) for b in sorted(mine, key=lambda b: b["updated_at"], reverse=True)]
+    return [summary(b, pid) for b in sorted(mine, key=lambda b: b["updated_at"], reverse=True)]
+
+
+def _delete_bills(conn: sqlite3.Connection, ids: list[tuple[str]]) -> None:
+    conn.executemany("DELETE FROM photos WHERE bill_id = ?", ids)
+    conn.executemany("DELETE FROM bills WHERE id = ?", ids)
+
+
+def delete_bill(bill_id: str, pid: str | None) -> None:
+    """Delete one bill with its photos; raises BadRequest unless the creator or the admin asks."""
+    if pid is None:
+        raise BadRequest("Удалить счёт можно только в Telegram")
+    with _lock:
+        if not can_delete(load(bill_id), pid):
+            raise BadRequest("Удалить счёт может только его создатель")
+        with _db() as conn:
+            _delete_bills(conn, [(bill_id,)])
 
 
 def purge_old_bills() -> int:
@@ -209,8 +231,7 @@ def purge_old_bills() -> int:
         ids = [(r[0],) for r in conn.execute(
             "SELECT id FROM bills WHERE json_extract(data, '$.updated_at') < ?", (cutoff,)
         )]
-        conn.executemany("DELETE FROM photos WHERE bill_id = ?", ids)
-        conn.executemany("DELETE FROM bills WHERE id = ?", ids)
+        _delete_bills(conn, ids)
     return len(ids)
 
 
@@ -825,6 +846,10 @@ class Handler(BaseHTTPRequestHandler):
                 return view(apply_op(bill_id, self._json_body()))
             case ["api", "bills", bill_id, "photos"]:
                 return view(add_photo(bill_id, self._body(), verified_pid(self.headers.get("X-Init-Data", ""))))
+            case ["api", "bills", bill_id, "delete"]:
+                pid = verified_pid(self.headers.get("X-Init-Data", ""))
+                delete_bill(bill_id, pid)
+                return {"ttl_days": BILL_TTL_DAYS, "bills": list_bills(pid or "")}
             case ["api", "bills", bill_id, "ocr"]:
                 tg_user = verified_user(self.headers.get("X-Init-Data", ""))
                 bill = recognize_pending(bill_id, tg_user)
