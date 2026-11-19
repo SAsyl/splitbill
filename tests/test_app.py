@@ -224,9 +224,9 @@ def check_item_service() -> None:
     _, b = call("/api/bills", {"title": "Аукцион"}, uid=222)
     path = f"/api/bills/{b['id']}"
     call(path, {"op": "join", "pid": "tg222", "name": "Бек"}, uid=222)
-    call(path, {"op": "set_service", "service_pct": 10})
+    call(path, {"op": "set_service", "service_pct": 10}, uid=222)
     for name, price in (("Аукционный сет", "5000"), ("Чай", "1000")):
-        _, b = call(path, {"op": "add_item", "name": name, "price": price})
+        _, b = call(path, {"op": "add_item", "name": name, "price": price}, uid=222)
     set_id = b["items"][0]["id"]
     for item in b["items"]:
         _, b = call(path, {"op": "set_share", "item_id": item["id"], "pid": "tg222", "count": 1}, uid=222)
@@ -283,7 +283,7 @@ def check_own_picks() -> None:
     for uid in (222, 333):
         call(path, {"op": "join", "pid": f"tg{uid}", "name": str(uid)}, uid=uid)
     call(path, {"op": "join", "pid": "g1", "name": "Гость"}, uid=222)
-    _, b = call(path, {"op": "add_item", "name": "Плов", "price": "3000"})
+    _, b = call(path, {"op": "add_item", "name": "Плов", "price": "3000"}, uid=222)
     share = {"op": "set_share", "item_id": b["items"][0]["id"], "count": 1}
     for pid, uid in (("tg222", 333), ("g1", 333), ("tg333", 0)):  # someone else, or unsigned
         status, err = call(path, {**share, "pid": pid}, uid=uid)
@@ -299,6 +299,28 @@ def check_own_picks() -> None:
         assert call(path, body, uid=333)[0] == 400, body
     _, b = call(path, {"op": "remove_person", "pid": "g1"}, uid=222)
     assert b["items"][0]["shares"] == {"tg333": 2}
+
+
+def check_creator_edits() -> None:
+    """#13: in a Telegram bill only the creator (or the admin) changes items and bill settings."""
+    _, b = call("/api/bills", {"title": "Правки"}, uid=222)
+    path = f"/api/bills/{b['id']}"
+    for uid in (222, 333):
+        call(path, {"op": "join", "pid": f"tg{uid}", "name": str(uid)}, uid=uid)
+    add = {"op": "add_item", "name": "Плов", "price": "3000"}
+    for uid in (0, 333):
+        assert "только создатель" in call(path, add, uid=uid)[1]["error"]
+    item_id = call(path, add, uid=222)[1]["items"][0]["id"]
+    for body in ({"op": "update_item", "item_id": item_id, "name": "Плов", "price": "1"},
+                 {"op": "delete_item", "item_id": item_id},
+                 {"op": "set_service", "service_pct": 50},
+                 {"op": "set_title", "title": "Другой"},
+                 {"op": "set_place", "place": "Другое"},
+                 {"op": "set_expected", "count": 9},
+                 {"op": "set_payer", "pid": "tg333"}):
+        assert call(path, body, uid=333)[0] == 400, body
+        assert call(path, body, uid=222 if body["op"] != "delete_item" else 111)[0] == 200, body
+    assert call(path)[1]["items"] == []
 
 
 def check_paid() -> None:
@@ -471,6 +493,7 @@ def main() -> None:
     check_undo()
     check_own_picks()
     check_paid()
+    check_creator_edits()
     check_receipt_owner()
     check_delete_bill()
     check_ocr_access()

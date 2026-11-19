@@ -235,7 +235,7 @@ function confirmView() {
 
 const qtyOf = (item) => item.qty || 1;
 // Mirrors the server rule: Telegram bills are managed by their creator or the admin
-// (service, receipt photos, marking items for other people)
+// (items, service, bill settings, receipt photos, marking items for other people)
 const canConfigure = () => !bill.creator || bill.creator === myPid || myPid === bill.admin_pid;
 const claimedOf = (item) => Object.values(item.shares).reduce((a, b) => a + b, 0);
 
@@ -340,19 +340,21 @@ function render() {
     people.map((p) => `<option value="${p}" ${p === sel ? 'selected' : ''}>${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</option>`).join('');
   const mismatch = bill.receipt_total && Math.abs(bill.receipt_total - c.with_service) > 100;
   const exempt = bill.items.filter((i) => i.no_service).length;
+  const owner = canConfigure(), locked = owner ? '' : 'disabled'; // bill settings: creator only
+  if (!owner) editing = false;
 
   $('#app').innerHTML = `
     <h1>${esc(bill.title)}</h1>
     ${joined ? '' : '<div class="warn">Вы смотрите счёт, но не участвуете в нём. <button class="link" data-act="join-tg">Участвовать</button></div>'}
-    <input id="place" class="place" placeholder="📍 Заведение" maxlength="60" value="${esc(bill.place || '')}">
+    ${owner || bill.place ? `<input id="place" class="place" placeholder="📍 Заведение" maxlength="60" value="${esc(bill.place || '')}" ${locked}>` : ''}
     ${photosView()}
     ${canConfigure() && people.length > 1 ? `<h2>Отмечаю за</h2>
     <div class="card"><div class="row"><span class="grow">Чьи позиции</span><select data-act="actas">${options(actAs)}</select></div></div>` : ''}
-    <h2>Позиции <span><button class="link" data-act="edit">${editing ? 'Готово' : 'Изменить'}</button></span></h2>
+    <h2>Позиции ${owner ? `<span><button class="link" data-act="edit">${editing ? 'Готово' : 'Изменить'}</button></span>` : ''}</h2>
     <div class="card">
-      ${bill.items.map(itemRow).join('') || `<div class="row muted">Пока пусто — добавьте позицию${bill.ocr && bill.photos.length ? ' или распознайте фото' : ''}</div>`}
-      <div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-qty" class="qty" inputmode="numeric" placeholder="×1" title="Порций"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
-      <button class="primary" data-act="add">+</button></div>
+      ${bill.items.map(itemRow).join('') || `<div class="row muted">${owner ? `Пока пусто — добавьте позицию${bill.ocr && bill.photos.length ? ' или распознайте фото' : ''}` : 'Пока пусто — позиции добавит создатель счёта'}</div>`}
+      ${owner ? `<div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-qty" class="qty" inputmode="numeric" placeholder="×1" title="Порций"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
+      <button class="primary" data-act="add">+</button></div>` : ''}
     </div>
     ${confirmView()}
     ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел${canConfigure() ? ', или нажмите «всем»' : ''}. Неотмеченные порции никому не добавляются.</div>` : ''}
@@ -360,9 +362,9 @@ function render() {
     ${mismatch ? `<div class="warn">Итог в чеке ${money(bill.receipt_total)}, а по позициям ${money(c.items_sum)} + обслуживание. Проверьте распознанные цены.</div>` : ''}
     <h2>Итого</h2>
     <div class="card">
-      <div class="row"><span class="grow">Человек в счёте</span><input id="expected" class="price" inputmode="numeric" placeholder="${bill.progress.joined}" value="${bill.expected_people || ''}"></div>
-      <div class="row"><span class="grow">Обслуживание, %${exempt ? `<div class="muted">кроме позиций без обслуживания: ${exempt}</div>` : canConfigure() && bill.items.length ? '<div class="muted">исключить позицию: «Изменить» → «+%»</div>' : ''}</span><input id="service" class="price" inputmode="decimal" value="${bill.service_pct}"></div>
-      <div class="row"><span class="grow">Кому переводить</span><select data-act="payer">
+      <div class="row"><span class="grow">Человек в счёте</span><input id="expected" class="price" inputmode="numeric" placeholder="${bill.progress.joined}" value="${bill.expected_people || ''}" ${locked}></div>
+      <div class="row"><span class="grow">Обслуживание, %${exempt ? `<div class="muted">кроме позиций без обслуживания: ${exempt}</div>` : owner && bill.items.length ? '<div class="muted">исключить позицию: «Изменить» → «+%»</div>' : ''}</span><input id="service" class="price" inputmode="decimal" value="${bill.service_pct}" ${locked}></div>
+      <div class="row"><span class="grow">Кому переводить</span><select data-act="payer" ${locked}>
         <option value="">${esc(bill.admin_name)} (по умолчанию)</option>
         ${people.filter((p) => p !== bill.admin_pid).map((p) => `<option value="${p}" ${p === bill.payer ? 'selected' : ''}>${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}</option>`).join('')}
       </select></div>

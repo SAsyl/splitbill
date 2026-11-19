@@ -497,7 +497,6 @@ def op_set_share(bill: Bill, body: dict[str, Any]) -> None:
 
 def op_restore_shares(bill: Bill, body: dict[str, Any]) -> None:
     """Undo of "всем": puts back who had this item before."""
-    _require_creator(bill, body.get("_uid"), "делить на всех")
     item = _item(bill, body)
     shares = body.get("shares")
     if not isinstance(shares, dict):
@@ -509,7 +508,6 @@ def op_restore_shares(bill: Bill, body: dict[str, Any]) -> None:
 
 
 def op_share_all(bill: Bill, body: dict[str, Any]) -> None:
-    _require_creator(bill, body.get("_uid"), "делить на всех")
     item = _item(bill, body)
     everyone = {pid: 1 for pid in bill["people"]}
     item["shares"] = {} if item["shares"] == everyone else everyone
@@ -521,7 +519,6 @@ def _require_creator(bill: Bill, uid: str | None, action: str = "менять") 
 
 
 def op_set_item_service(bill: Bill, body: dict[str, Any]) -> None:
-    _require_creator(bill, body.get("_uid"))
     item = _item(bill, body)
     if body.get("no_service"):
         item["no_service"] = True
@@ -570,7 +567,6 @@ def op_set_requisites(bill: Bill, body: dict[str, Any]) -> None:
 
 
 def op_delete_photo(bill: Bill, body: dict[str, Any]) -> None:
-    _require_creator(bill, body.get("_uid"), "удалять")
     photo = _photo(bill, _str(body, "photo_id", 64))
     bill["photos"].remove(photo)
     with _db() as conn:
@@ -582,12 +578,25 @@ OPS: dict[str, Callable[[Bill, dict[str, Any]], None]] = {
 }
 
 
+# Ops that change the bill itself, not someone's picks: creator (or admin) only in Telegram bills
+CREATOR_OPS: dict[str, str] = {
+    "add_item": "добавлять позиции", "update_item": "менять позиции", "delete_item": "удалять позиции",
+    "set_item_service": "менять обслуживание", "set_service": "менять обслуживание",
+    "share_all": "делить на всех", "restore_shares": "делить на всех",
+    "set_title": "менять название", "set_place": "менять заведение", "set_expected": "менять число людей",
+    "set_payer": "менять получателя", "delete_photo": "удалять фото",
+}
+
+
 def apply_op(bill_id: str, body: dict[str, Any]) -> Bill:
-    op = OPS.get(str(body.get("op")))
+    name = str(body.get("op"))
+    op = OPS.get(name)
     if op is None:
         raise BadRequest(f"Unknown op: {body.get('op')!r}")
     with _lock:
         bill = load(bill_id)
+        if name in CREATOR_OPS:
+            _require_creator(bill, body.get("_uid"), CREATOR_OPS[name])
         op(bill, body)
         bill["version"] += 1
         save(bill)
