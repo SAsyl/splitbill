@@ -229,7 +229,7 @@ def check_item_service() -> None:
         _, b = call(path, {"op": "add_item", "name": name, "price": price})
     set_id = b["items"][0]["id"]
     for item in b["items"]:
-        _, b = call(path, {"op": "set_share", "item_id": item["id"], "pid": "tg222", "count": 1})
+        _, b = call(path, {"op": "set_share", "item_id": item["id"], "pid": "tg222", "count": 1}, uid=222)
     assert b["calc"]["owed"]["tg222"] == 660000
     toggle = {"op": "set_item_service", "item_id": set_id, "no_service": True}
     assert call(path, toggle)[0] == 400 and call(path, toggle, uid=333)[0] == 400  # not the creator
@@ -274,6 +274,31 @@ def check_delete_bill() -> None:
         assert conn.execute("SELECT COUNT(*) FROM photos WHERE bill_id = ?", (b["id"],)).fetchone()[0] == 0
     _, other = call("/api/bills", {"title": "Чужой"}, uid=557)
     assert call(f"/api/bills/{other['id']}/delete", raw=b"", uid=111)[0] == 200  # admin
+
+
+def check_own_picks() -> None:
+    """#11: in a Telegram bill people mark only their own items; the creator marks for anyone."""
+    _, b = call("/api/bills", {"title": "Свои"}, uid=222)
+    path = f"/api/bills/{b['id']}"
+    for uid in (222, 333):
+        call(path, {"op": "join", "pid": f"tg{uid}", "name": str(uid)}, uid=uid)
+    call(path, {"op": "join", "pid": "g1", "name": "Гость"}, uid=222)
+    _, b = call(path, {"op": "add_item", "name": "Плов", "price": "3000"})
+    share = {"op": "set_share", "item_id": b["items"][0]["id"], "count": 1}
+    for pid, uid in (("tg222", 333), ("g1", 333), ("tg333", 0)):  # someone else, or unsigned
+        status, err = call(path, {**share, "pid": pid}, uid=uid)
+        assert status == 400 and "только создатель" in err["error"], (pid, uid, err)
+    assert call(path, {**share, "pid": "tg333"}, uid=333)[0] == 200  # own picks
+    assert call(path, {**share, "pid": "g1"}, uid=222)[0] == 200  # creator for a guest
+    assert call(path, {**share, "pid": "tg333", "count": 2}, uid=111)[0] == 200  # admin
+    for body in ({"op": "share_all", "item_id": share["item_id"]},
+                 {"op": "restore_shares", "item_id": share["item_id"], "shares": {}},
+                 {"op": "join", "pid": "g2", "name": "Ещё"},
+                 {"op": "set_done", "pid": "g1", "done": True},
+                 {"op": "remove_person", "pid": "g1"}):
+        assert call(path, body, uid=333)[0] == 400, body
+    _, b = call(path, {"op": "remove_person", "pid": "g1"}, uid=222)
+    assert b["items"][0]["shares"] == {"tg333": 2}
 
 
 def check_undo() -> None:
@@ -429,6 +454,7 @@ def main() -> None:
     check_portions()
     check_item_service()
     check_undo()
+    check_own_picks()
     check_receipt_owner()
     check_delete_bill()
     check_ocr_access()

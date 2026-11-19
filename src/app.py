@@ -320,6 +320,21 @@ def _require_self(pid: str, body: dict[str, Any]) -> None:
         raise BadRequest("Эти данные может менять только сам участник (откройте счёт в Telegram)")
 
 
+def _is_manager(bill: Bill, uid: str | None) -> bool:
+    """Bills made in Telegram are managed by their creator (or the admin); browser bills by anyone."""
+    return bill["creator"] is None or uid in (bill["creator"], ADMIN_PID)
+
+
+def _require_own(bill: Bill, pid: str, body: dict[str, Any], action: str = "Отмечать за других") -> None:
+    """Picks and people are changed by the person themselves; for others only by the bill's manager."""
+    uid = body.get("_uid")
+    if _is_manager(bill, uid) or pid == uid:
+        return
+    if uid is None and not pid.startswith("tg"):
+        return  # browser entries carry no verifiable identity
+    raise BadRequest(f"{action} может только создатель счёта")
+
+
 # ---------- input validation ----------
 
 def _str(body: dict[str, Any], key: str, limit: int = 100) -> str:
@@ -401,6 +416,7 @@ def _name_taken(bill: Bill, pid: str, name: str) -> bool:
 def op_join(bill: Bill, body: dict[str, Any]) -> None:
     pid = _str(body, "pid", 64)
     _require_self(pid, body)
+    _require_own(bill, pid, body, "Добавлять участников")
     name = _str(body, "name", 40)
     if pid not in bill["people"] and len(bill["people"]) >= MAX_PEOPLE:
         raise BadRequest("Too many people")
@@ -430,6 +446,7 @@ def op_claim(bill: Bill, body: dict[str, Any]) -> None:
 def op_set_done(bill: Bill, body: dict[str, Any]) -> None:
     pid = _person(bill, body)
     _require_self(pid, body)
+    _require_own(bill, pid, body, "Подтверждать за других")
     bill["people"][pid]["done"] = bool(body.get("done"))
 
 
@@ -439,6 +456,7 @@ def op_set_expected(bill: Bill, body: dict[str, Any]) -> None:
 
 def op_remove_person(bill: Bill, body: dict[str, Any]) -> None:
     pid = _person(bill, body)
+    _require_own(bill, pid, body, "Убирать участников")
     del bill["people"][pid]
     for item in bill["items"]:
         item["shares"].pop(pid, None)
@@ -469,6 +487,7 @@ def op_delete_item(bill: Bill, body: dict[str, Any]) -> None:
 def op_set_share(bill: Bill, body: dict[str, Any]) -> None:
     item = _item(bill, body)
     pid = _person(bill, body)
+    _require_own(bill, pid, body)
     count = _int(body, "count", 0, 99)
     if count:
         item["shares"][pid] = count
@@ -478,6 +497,7 @@ def op_set_share(bill: Bill, body: dict[str, Any]) -> None:
 
 def op_restore_shares(bill: Bill, body: dict[str, Any]) -> None:
     """Undo of "всем": puts back who had this item before."""
+    _require_creator(bill, body.get("_uid"), "делить на всех")
     item = _item(bill, body)
     shares = body.get("shares")
     if not isinstance(shares, dict):
@@ -489,15 +509,14 @@ def op_restore_shares(bill: Bill, body: dict[str, Any]) -> None:
 
 
 def op_share_all(bill: Bill, body: dict[str, Any]) -> None:
+    _require_creator(bill, body.get("_uid"), "делить на всех")
     item = _item(bill, body)
     everyone = {pid: 1 for pid in bill["people"]}
     item["shares"] = {} if item["shares"] == everyone else everyone
 
 
 def _require_creator(bill: Bill, uid: str | None, action: str = "менять") -> None:
-    """Bills made in Telegram are managed by their creator (or the admin); browser bills by anyone."""
-    creator = bill["creator"]
-    if creator is not None and uid not in (creator, ADMIN_PID):
+    if not _is_manager(bill, uid):
         raise BadRequest(f"Это может {action} только создатель счёта")
 
 

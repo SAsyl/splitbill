@@ -65,6 +65,12 @@
   #zoom[hidden] { display: none; }
   #zoom img { max-width: 100%; max-height: 100%; }
   #toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; display: none; z-index: 9; align-items: center; gap: 12px; max-width: calc(100% - 32px); }
+  .confirm { background: var(--bg); border: 2px solid var(--accent); border-radius: 12px; padding: 14px; margin-top: 12px; text-align: center; }
+  .confirm.ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--bg)); }
+  .confirm b { font-size: 17px; }
+  .confirm .muted { margin-top: 4px; }
+  .confirm button.primary { width: 100%; margin-top: 12px; padding: 12px; font-size: 17px; font-weight: 600; }
+  .confirm button.link { margin-top: 10px; font-size: 14px; }
   #toast button { background: none; color: var(--accent); padding: 0; font-weight: 600; font-size: 14px; }
 </style>
 </head>
@@ -210,15 +216,26 @@ function progressView() {
 // Telegram participants confirm only for themselves; guests can be confirmed by anyone
 const canConfirm = (pid) => !pid.startsWith('tg') || pid === myPid;
 
-function doneButton() {
-  if (!canConfirm(actAs)) return '';
-  const done = bill.people[actAs].done;
-  return `<div class="row"><span class="grow muted">${done ? '✓ Отметил всё' : 'Отметили всё, что ели и пили?'}</span>
-    <button class="${done ? '' : 'primary'}" data-act="done">${done ? 'Отменить' : 'Я всё отметил'}</button></div>`;
+// Big confirmation block under the items: the step everyone must not miss
+function confirmView() {
+  const person = bill.people[actAs];
+  if (!person || !canConfirm(actAs)) return '';
+  const self = actAs === myPid, sum = money(bill.calc.owed[actAs] || 0);
+  if (person.done) {
+    const g = bill.progress;
+    const wait = g.ready ? 'Все отметились — итоги готовы' : `Ждём остальных: отметились ${g.done} из ${g.expected}`;
+    return `<div class="confirm ok"><b>✓ ${self ? 'Спасибо! Вы всё отметили' : `${esc(person.name)}: всё отмечено`}</b>
+      <div class="muted">${self ? 'Ваша сумма' : 'Сумма'}: ${sum}. ${wait}</div>
+      <button class="link" data-act="done">Изменить отметки</button></div>`;
+  }
+  return `<div class="confirm"><b>${self ? 'Отметили всё, что ели и пили?' : `Всё отметили за ${esc(person.name)}?`}</b>
+    <div class="muted">Сейчас: ${sum}. Подтвердите, когда закончите отмечать</div>
+    <button class="primary" data-act="done">${self ? '✅ Я всё отметил' : '✅ Подтвердить'}</button></div>`;
 }
 
 const qtyOf = (item) => item.qty || 1;
-// Mirrors the server rule: Telegram bills are managed by their creator or the admin (service, receipt photos)
+// Mirrors the server rule: Telegram bills are managed by their creator or the admin
+// (service, receipt photos, marking items for other people)
 const canConfigure = () => !bill.creator || bill.creator === myPid || myPid === bill.admin_pid;
 const claimedOf = (item) => Object.values(item.shares).reduce((a, b) => a + b, 0);
 
@@ -241,7 +258,7 @@ function itemRow(item) {
       ${qty > 1 ? `<div class="muted">отмечено ${claimed} из ${qty} · по ${money(item.price / qty)}</div>` : ''}
       <div class="chips">${chips || '<span class="muted">никто не отметил</span>'}</div></div>
     ${stepper}<span class="num">${money(item.price)}</span>
-    <button class="link" data-act="all" data-id="${item.id}">всем</button></div>`;
+    ${canConfigure() ? `<button class="link" data-act="all" data-id="${item.id}">всем</button>` : ''}</div>`;
 }
 
 function photosView() {
@@ -304,7 +321,8 @@ function render() {
   const joined = Boolean(bill.people[myPid]);
   // Browser users must give a name; Telegram users (e.g. the admin) may just look
   if (!joined && !tgUser) { $('#app').innerHTML = joinView(); return; }
-  if (!bill.people[actAs]) actAs = joined ? myPid : Object.keys(bill.people)[0];
+  if (!canConfigure()) actAs = myPid; // participants mark only their own items
+  else if (!bill.people[actAs]) actAs = joined ? myPid : Object.keys(bill.people)[0];
   if (draft && draft.pid !== bill.payer) draft = null;
   if (!draft && !bill.pay_to.admin && !bill.pay_to.phone && canEditRequisites()) draft = { pid: bill.payer, phone: '', banks: [] };
   const c = bill.calc;
@@ -319,15 +337,16 @@ function render() {
     ${joined ? '' : '<div class="warn">Вы смотрите счёт, но не участвуете в нём. <button class="link" data-act="join-tg">Участвовать</button></div>'}
     <input id="place" class="place" placeholder="📍 Заведение" maxlength="60" value="${esc(bill.place || '')}">
     ${photosView()}
-    <h2>Отмечаю за</h2>
-    <div class="card"><div class="row"><span class="grow">Чьи позиции</span><select data-act="actas">${options(actAs)}</select></div>${doneButton()}</div>
+    ${canConfigure() && people.length > 1 ? `<h2>Отмечаю за</h2>
+    <div class="card"><div class="row"><span class="grow">Чьи позиции</span><select data-act="actas">${options(actAs)}</select></div></div>` : ''}
     <h2>Позиции <span><button class="link" data-act="edit">${editing ? 'Готово' : 'Изменить'}</button></span></h2>
     <div class="card">
       ${bill.items.map(itemRow).join('') || `<div class="row muted">Пока пусто — добавьте позицию${bill.ocr && bill.photos.length ? ' или распознайте фото' : ''}</div>`}
       <div class="row"><input id="new-name" class="grow" placeholder="Позиция"><input id="new-qty" class="qty" inputmode="numeric" placeholder="×1" title="Порций"><input id="new-price" class="price" inputmode="decimal" placeholder="Цена">
       <button class="primary" data-act="add">+</button></div>
     </div>
-    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел, или нажмите «всем». Неотмеченные порции никому не добавляются.</div>` : ''}
+    ${confirmView()}
+    ${c.unassigned ? `<div class="warn">Не распределено: <b>${money(c.unassigned)}</b> — отметьте, кто это ел${canConfigure() ? ', или нажмите «всем»' : ''}. Неотмеченные порции никому не добавляются.</div>` : ''}
     ${progressView()}
     ${mismatch ? `<div class="warn">Итог в чеке ${money(bill.receipt_total)}, а по позициям ${money(c.items_sum)} + обслуживание. Проверьте распознанные цены.</div>` : ''}
     <h2>Итого</h2>
@@ -346,8 +365,8 @@ function render() {
       </div>`).join('')}
       <div class="row"><b class="grow">Всего</b><b class="num">${money(c.total)}</b></div>
     </div>
-    <h2>Участники <button class="link" data-act="add-person">+ без Telegram</button></h2>
-    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${tgUser && !p.startsWith('tg') ? `<button class="link" data-act="claim" data-pid="${p}">это я</button>` : ''}${p === myPid ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
+    <h2>Участники ${canConfigure() ? '<button class="link" data-act="add-person">+ без Telegram</button>' : ''}</h2>
+    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${tgUser && !p.startsWith('tg') ? `<button class="link" data-act="claim" data-pid="${p}">это я</button>` : ''}${p === myPid || !canConfigure() ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
     <div class="bar">${canConfigure() ? `<button data-act="photo" ${busy ? 'disabled' : ''}>📎 Фото</button>` : ''}<button data-act="share">🔗 Ссылка</button><button class="primary" data-act="copy">📋 Итоги</button></div>`;
 }
 
