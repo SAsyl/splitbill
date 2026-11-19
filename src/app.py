@@ -552,7 +552,13 @@ def op_set_payer(bill: Bill, body: dict[str, Any]) -> None:
 
 
 def op_set_paid(bill: Bill, body: dict[str, Any]) -> None:
-    bill["people"][_person(bill, body)]["paid"] = bool(body.get("paid"))
+    """People tick their own transfer once their items are confirmed; the manager ticks anyone."""
+    pid = _person(bill, body)
+    _require_own(bill, pid, body, "Отмечать оплату за других")
+    paid = bool(body.get("paid"))
+    if paid and not bill["people"][pid].get("done") and not _is_manager(bill, body.get("_uid")):
+        raise BadRequest("Сначала нажмите «Я всё отметил», потом отмечайте оплату")
+    bill["people"][pid]["paid"] = paid
 
 
 def op_set_requisites(bill: Bill, body: dict[str, Any]) -> None:

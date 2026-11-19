@@ -301,6 +301,21 @@ def check_own_picks() -> None:
     assert b["items"][0]["shares"] == {"tg333": 2}
 
 
+def check_paid() -> None:
+    """#12: «Перевёл» is ticked by the person after «Я всё отметил», or by the creator any time."""
+    _, b = call("/api/bills", {"title": "Оплата"}, uid=222)
+    path = f"/api/bills/{b['id']}"
+    for uid in (222, 333, 334):
+        call(path, {"op": "join", "pid": f"tg{uid}", "name": str(uid)}, uid=uid)
+    paid = {"op": "set_paid", "pid": "tg333", "paid": True}
+    assert "Я всё отметил" in call(path, paid, uid=333)[1]["error"]  # not confirmed yet
+    assert "только создатель" in call(path, paid, uid=334)[1]["error"]  # someone else
+    call(path, {"op": "set_done", "pid": "tg333", "done": True}, uid=333)
+    assert call(path, paid, uid=333)[1]["people"]["tg333"]["paid"] is True
+    _, b = call(path, {**paid, "pid": "tg334"}, uid=222)  # creator, even before confirmation
+    assert b["people"]["tg334"]["paid"] is True
+
+
 def check_undo() -> None:
     """#8: an accidental "всем" is undone exactly, bad input is refused."""
     _, b = call("/api/bills", {"title": "Отмена"})
@@ -455,6 +470,7 @@ def main() -> None:
     check_item_service()
     check_undo()
     check_own_picks()
+    check_paid()
     check_receipt_owner()
     check_delete_bill()
     check_ocr_access()

@@ -315,6 +315,15 @@ function summaryText() {
   return lines.join('\n');
 }
 
+// Mirrors the server: own checkbox after «Я всё отметил»; the creator ticks anyone
+const canPay = (p) => canConfigure() || (p === myPid && (bill.people[p].done || bill.people[p].paid));
+
+function paidBox(p) {
+  const person = bill.people[p];
+  const hint = p === myPid && !person.done && !canConfigure() ? 'Сначала нажмите «Я всё отметил»' : 'Перевёл';
+  return `<input type="checkbox" title="${hint}" data-act="paid" data-pid="${p}" ${person.paid ? 'checked' : ''} ${canPay(p) ? '' : 'disabled'}>`;
+}
+
 const payee = () => bill.payer || (bill.people[bill.admin_pid] ? bill.admin_pid : null);
 
 function render() {
@@ -359,9 +368,9 @@ function render() {
       </select></div>
       ${payToView()}
       ${people.map((p) => `<div class="row">
-        <span class="grow ${bill.people[p].paid ? 'paid' : ''}">${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}${bill.people[p].done ? '' : ' <span class="muted">· отмечает</span>'}</span>
+        <span class="grow ${bill.people[p].paid ? 'paid' : ''}">${esc(nameOf(p))}${p === myPid ? ' (я)' : ''}${bill.people[p].done ? '' : ` <span class="muted">· ${p === myPid && !canConfigure() ? 'нажмите «Я всё отметил», чтобы отметить оплату' : 'отмечает'}</span>`}</span>
         <b class="num">${money(c.owed[p])}</b>
-        ${p === payee() ? '<span class="muted">получатель</span>' : `<input type="checkbox" title="Перевёл" data-act="paid" data-pid="${p}" ${bill.people[p].paid ? 'checked' : ''}>`}
+        ${p === payee() ? '<span class="muted">получатель</span>' : paidBox(p)}
       </div>`).join('')}
       <div class="row"><b class="grow">Всего</b><b class="num">${money(c.total)}</b></div>
     </div>
