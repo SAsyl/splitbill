@@ -71,6 +71,7 @@
   .confirm .muted { margin-top: 4px; }
   .confirm button.primary { width: 100%; margin-top: 12px; padding: 12px; font-size: 17px; font-weight: 600; }
   .confirm button.link { margin-top: 10px; font-size: 14px; }
+  #toast.warn { background: var(--danger); color: #fff; font-weight: 500; }
   #toast button { background: none; color: var(--accent); padding: 0; font-weight: 600; font-size: 14px; }
 </style>
 </head>
@@ -109,8 +110,9 @@ const when = (ts) => new Date(ts * 1000).toLocaleString('ru-RU', { day: '2-digit
 
 let undoAction = null; // what "Отменить" in the toast puts back
 
-function toast(text, ms = 2500, undo = null) {
+function toast(text, ms = 2500, undo = null, warn = false) {
   const t = $('#toast');
+  t.classList.toggle('warn', warn);
   undoAction = undo;
   t.innerHTML = `<span>${esc(text)}</span>${undo ? '<button data-act="undo">Отменить</button>' : ''}`;
   t.style.display = 'flex';
@@ -324,6 +326,9 @@ function paidBox(p) {
   return `<input type="checkbox" title="${hint}" data-act="paid" data-pid="${p}" ${person.paid ? 'checked' : ''} ${canPay(p) ? '' : 'disabled'}>`;
 }
 
+// A guest entry made for an @username is only for that account
+const canClaim = (p) => !p.startsWith('tg') && (!bill.people[p].username || bill.people[p].username === tgUser?.username?.toLowerCase());
+
 const payee = () => bill.payer || (bill.people[bill.admin_pid] ? bill.admin_pid : null);
 
 function render() {
@@ -376,19 +381,19 @@ function render() {
       </div>`).join('')}
       <div class="row"><b class="grow">Всего</b><b class="num">${money(c.total)}</b></div>
     </div>
-    <h2>Участники ${canConfigure() ? '<button class="link" data-act="add-person">+ без Telegram</button>' : ''}</h2>
-    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}</span>${tgUser && !p.startsWith('tg') ? `<button class="link" data-act="claim" data-pid="${p}">это я</button>` : ''}${p === myPid || !canConfigure() ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
+    <h2>Участники ${canConfigure() ? '<button class="link" data-act="add-person">+ участник</button>' : ''}</h2>
+    <div class="card">${people.map((p) => `<div class="row"><span class="grow">${esc(nameOf(p))}${bill.people[p].username && !p.startsWith('tg') ? ' <span class="muted">· ждём, пока откроет счёт</span>' : ''}</span>${tgUser && canClaim(p) ? `<button class="link" data-act="claim" data-pid="${p}">это я</button>` : ''}${p === myPid || !canConfigure() ? '' : `<button class="link" data-act="rm" data-pid="${p}">убрать</button>`}</div>`).join('')}</div>
     <div class="bar">${canConfigure() ? `<button data-act="photo" ${busy ? 'disabled' : ''}>📎 Фото</button>` : ''}<button data-act="share">🔗 Ссылка</button><button class="primary" data-act="copy">📋 Итоги</button></div>`;
 }
 
-async function copy(text, done) {
+async function copy(text, done, ms = 2500, warn = false) {
   try { await navigator.clipboard.writeText(text); }
   catch {
     // Older WebViews: fall back to a temporary textarea
     const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta);
     ta.select(); document.execCommand('copy'); ta.remove();
   }
-  toast(done);
+  toast(done, ms, null, warn);
 }
 
 function setCount(item, next) {
@@ -396,6 +401,25 @@ function setCount(item, next) {
   const text = next ? `Отмечено${who}: ${item.name}${next > 1 ? ' ×' + next : ''}` : `Снято${who}: ${item.name}`;
   pick({ op: 'set_share', item_id: item.id, pid: actAs, count: next },
     { op: 'set_share', item_id: item.id, pid: actAs, count: item.shares[actAs] || 0 }, text);
+}
+
+// A guest by name, or a colleague by @username: the creator marks for them right away
+async function addGuest(name) {
+  if (!name) return;
+  const pid = 'g' + crypto.randomUUID().slice(0, 12);
+  if (!await op({ op: 'join', pid, name })) return;
+  actAs = pid; render();
+  const handle = bill.people[pid].username;
+  const who = handle ? `@${handle}` : name;
+  toast(`Добавлено: ${who}. Сейчас отмечаете за ${who}${handle ? ' — когда откроет счёт в Telegram, отметки перейдут в аккаунт' : ''}`, 6000);
+}
+
+// Paying before everyone confirmed means the amount can still change
+function copyPhone() {
+  const g = bill.progress;
+  if (g.ready) return copy(bill.pay_to.phone, 'Номер скопирован');
+  const missing = g.expected > g.joined ? `, в счёте пока ${g.joined} из ${g.expected}` : '';
+  copy(bill.pay_to.phone, `⚠️ Номер скопирован, но отметились не все: ${g.done} из ${g.expected}${missing}. Дождитесь, пока все нажмут «Я всё отметил», и только потом переводите — сумма ещё может измениться`, 10000, true);
 }
 
 // One delegated handler for all buttons
@@ -422,10 +446,10 @@ document.addEventListener('click', (e) => {
     rm: () => op({ op: 'remove_person', pid: el.dataset.pid }),
     'add-person': () => {
       const row = document.createElement('div'); row.className = 'row';
-      row.innerHTML = '<input id="guest" class="grow" placeholder="Имя" maxlength="40"><button class="primary" data-act="guest">Добавить</button>';
+      row.innerHTML = '<input id="guest" class="grow" placeholder="Имя, @username или t.me/ссылка" maxlength="64"><button class="primary" data-act="guest">Добавить</button>';
       el.closest('h2').nextElementSibling.append(row); $('#guest').focus();
     },
-    guest: () => { const name = $('#guest').value.trim(); if (name) op({ op: 'join', pid: 'g' + crypto.randomUUID().slice(0, 12), name }); },
+    guest: () => addGuest($('#guest').value.trim()),
     open: () => openBill(el.dataset.id, true),
     'del-bill': () => deleteBill(id),
     'join-tg': () => op({ op: 'join', pid: myPid, name: tgName }),
@@ -435,7 +459,7 @@ document.addEventListener('click', (e) => {
     zoom: () => { $('#zoom img').src = el.src; $('#zoom').hidden = false; },
     unzoom: () => { $('#zoom').hidden = true; },
     pdf: () => { const url = `${location.origin}/api/bills/${billId}/photos/${el.dataset.id}`; tg?.initData ? tg.openLink(url) : window.open(url); },
-    'copy-phone': () => copy(bill.pay_to.phone, 'Номер скопирован'),
+    'copy-phone': () => copyPhone(),
     'edit-req': () => { draft = { pid: bill.payer, phone: bill.pay_to.phone, banks: [...bill.pay_to.banks] }; render(); },
     bank: () => {
       const b = el.dataset.bank;

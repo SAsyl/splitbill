@@ -323,6 +323,28 @@ def check_creator_edits() -> None:
     assert call(path)[1]["items"] == []
 
 
+def check_tg_handles() -> None:
+    """#14: the creator adds a colleague by @username, marks for them, and they inherit it on opening."""
+    _, b = call("/api/bills", {"title": "Коллеги"}, uid=222)
+    path = f"/api/bills/{b['id']}"
+    call(path, {"op": "join", "pid": "tg222", "name": "Бек"}, uid=222)
+    _, b = call(path, {"op": "add_item", "name": "Плов", "price": "3000"}, uid=222)
+    item_id = b["items"][0]["id"]
+    for pid, handle in (("g1", "https://t.me/User333/"), ("g2", "@user444")):
+        status, b = call(path, {"op": "join", "pid": pid, "name": handle}, uid=222)
+        assert status == 200, b
+    assert b["people"]["g1"] == {"paid": False, "name": "@user333", "username": "user333"}
+    assert "уже есть" in call(path, {"op": "join", "pid": "g3", "name": "t.me/USER333"}, uid=222)[1]["error"]
+    assert call(path, {"op": "join", "pid": "g4", "name": "@user555"}, uid=333)[0] == 400  # not the creator
+    call(path, {"op": "set_share", "item_id": item_id, "pid": "g1", "count": 2}, uid=222)
+    assert "@user444" in call(path, {"op": "claim", "pid": "g2"}, uid=333)[1]["error"]  # someone else's place
+    _, b = call(path, {"op": "join", "pid": "tg333", "name": "Аня"}, uid=333)  # opens the bill: username user333
+    assert "g1" not in b["people"] and b["people"]["tg333"]["name"] == "Аня"
+    assert b["items"][0]["shares"] == {"tg333": 2}
+    _, b = call(path, {"op": "join", "pid": "tg666", "name": "Чужой"}, uid=666)  # no matching entry
+    assert "g2" in b["people"] and "tg666" in b["people"]
+
+
 def check_paid() -> None:
     """#12: «Перевёл» is ticked by the person after «Я всё отметил», or by the creator any time."""
     _, b = call("/api/bills", {"title": "Оплата"}, uid=222)
@@ -493,6 +515,7 @@ def main() -> None:
     check_undo()
     check_own_picks()
     check_paid()
+    check_tg_handles()
     check_creator_edits()
     check_receipt_owner()
     check_delete_bill()

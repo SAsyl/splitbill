@@ -61,6 +61,8 @@ MAX_PHOTOS = 10
 MAX_BANKS = 8
 INIT_DATA_TTL = 24 * 3600
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+# "@name", "t.me/name" or "https://t.me/name": how the creator points at a colleague's Telegram
+TG_HANDLE_RE = re.compile(r"^(?:@|(?:https?://)?(?:t|telegram)\.me/)([A-Za-z0-9_]{5,32})/?$", re.IGNORECASE)
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "ocr": False,
@@ -413,13 +415,56 @@ def _name_taken(bill: Bill, pid: str, name: str) -> bool:
                for other, p in bill["people"].items())
 
 
+def _handle_owner(bill: Bill, username: str) -> str | None:
+    """Entry already holding this Telegram username, if any."""
+    return next((pid for pid, p in bill["people"].items() if p.get("username") == username), None)
+
+
+def _merge_guest(bill: Bill, guest_pid: str, uid: str) -> None:
+    """Moves a guest entry and its picks to a Telegram account."""
+    guest = bill["people"].pop(guest_pid)
+    person = bill["people"].setdefault(uid, {**guest, "paid": False})
+    person["name"] = guest["name"]
+    for item in bill["items"]:
+        if count := item["shares"].pop(guest_pid, 0):
+            item["shares"][uid] = item["shares"].get(uid, 0) + count
+    if bill["payer"] == guest_pid:
+        bill["payer"] = uid
+
+
+def _join_telegram(bill: Bill, pid: str, name: str, username: str | None) -> None:
+    """A Telegram user opens the bill: the entry the creator made for their @username becomes theirs."""
+    if pid not in bill["people"] and username:
+        guest = _handle_owner(bill, username)
+        if guest is not None and not guest.startswith("tg"):
+            _merge_guest(bill, guest, pid)
+    person = bill["people"].setdefault(pid, {"paid": False})
+    person["name"] = name
+    if username and _handle_owner(bill, username) in (None, pid):
+        person["username"] = username
+
+
+def _add_by_handle(bill: Bill, pid: str, username: str) -> None:
+    """The creator adds a colleague by @username; they are marked for until they open the bill."""
+    if _handle_owner(bill, username) is not None:
+        raise BadRequest(f"@{username} уже есть в счёте")
+    bill["people"][pid] = {"paid": False, "name": f"@{username}", "username": username}
+
+
 def op_join(bill: Bill, body: dict[str, Any]) -> None:
     pid = _str(body, "pid", 64)
     _require_self(pid, body)
     _require_own(bill, pid, body, "Добавлять участников")
-    name = _str(body, "name", 40)
+    name = _str(body, "name", 64)  # room for a full t.me link; plain names are cut to 40 below
     if pid not in bill["people"] and len(bill["people"]) >= MAX_PEOPLE:
         raise BadRequest("Too many people")
+    if pid.startswith("tg"):
+        _join_telegram(bill, pid, name[:40].strip(), body.get("_username"))
+        return
+    if handle := TG_HANDLE_RE.match(name):
+        _add_by_handle(bill, pid, handle.group(1).lower())
+        return
+    name = name[:40].strip()
     if _name_taken(bill, pid, name):
         raise BadRequest(f"«{name}» уже есть в счёте. Если это вы, выберите себя в списке участников")
     bill["people"].setdefault(pid, {"paid": False})["name"] = name
@@ -433,14 +478,9 @@ def op_claim(bill: Bill, body: dict[str, Any]) -> None:
     pid = _person(bill, body)
     if pid.startswith("tg"):
         raise BadRequest("Этот участник уже привязан к Telegram")
-    guest = bill["people"].pop(pid)
-    person = bill["people"].setdefault(uid, {**guest, "paid": False})
-    person["name"] = guest["name"]
-    for item in bill["items"]:
-        if count := item["shares"].pop(pid, 0):
-            item["shares"][uid] = item["shares"].get(uid, 0) + count
-    if bill["payer"] == pid:
-        bill["payer"] = uid
+    if bill["people"][pid].get("username") not in (None, body.get("_username")):
+        raise BadRequest(f"Это место для @{bill['people'][pid]['username']}")
+    _merge_guest(bill, pid, uid)
 
 
 def op_set_done(bill: Bill, body: dict[str, Any]) -> None:
@@ -830,7 +870,11 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self._body() or b"{}")
         if not isinstance(body, dict):
             raise BadRequest("JSON object expected")
-        body["_uid"] = verified_pid(self.headers.get("X-Init-Data", ""))  # server-set, never trusted from client
+        # Server-set from the signed initData, never trusted from the client
+        user = verified_user(self.headers.get("X-Init-Data", ""))
+        body["_uid"] = None if user is None else f"tg{user['id']}"
+        username = None if user is None else user.get("username")
+        body["_username"] = username.lower() if isinstance(username, str) and username else None
         return body
 
     def _route(self, handler: Callable[[list[str]], Any]) -> None:
